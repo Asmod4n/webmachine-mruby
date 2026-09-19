@@ -1,18 +1,22 @@
 # Cleanup plan
 
 This plan says how the source of this tree becomes readable from its
-declarations alone. It was written after a full read of `src/`,
-`mrblib/`, `test/`, `bintest/`, `tools/` and `docs/`, and after a read
-of the tables of contents of RFC 9110, 9111, 9112, 9113, 6455, 6265,
-7541, 7692, 8441 and 9457.
+declarations alone.
+
+What was read for it: every file under `src/`, `mrblib/`, `test/`,
+`bintest/` and `tools/`; `CLAUDE.md`; `bench/how-to-measure.md` and
+the headers of `bench/threads.sh` and `bench/floor.sh`; the reference
+pages under `docs/` and the three explanation pages; the tables of
+contents of RFC 9110, 9111, 9112, 9113, 6455, 6265, 7541, 7692, 8441
+and 9457. Not read in full: the other scripts under `bench/` and the
+how-to pages under `docs/`. Step 0 reads them before the first
+measurement. This plan makes no claim about speed.
 
 The plan has seven parts. Part 1 states the rules. Part 2 gives the
-numbers before the work. Part 3 states what the audit found, which
-procedures the RFCs give, and where their pieces lie today. Part 4
+numbers before the work. Part 3 states what the audit found. Part 4
 states the target: the classes and the methods, in the order of the
-RFCs. Part 5 records the decisions that were open and are now made.
-Part 6 states the steps, their order, and the loop that closes each
-step. Part 7 states what no step may do.
+RFCs. Part 5 records the decisions. Part 6 states the steps and the
+loop that closes each step. Part 7 states what no step may do.
 
 ## 1. Rules
 
@@ -22,100 +26,98 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
    `test/`, `bintest/`, `tools/`, the Rakefile, the build configs or
    `mrbgem.rake`. A fact that a comment carried goes to one of four
    places: a name, a `static_assert` with a message, a test, or a page
-   under `docs/`. Part 3.6 says which place for which fact.
+   under `docs/`. Part 3.6 says which place takes which fact.
 2. **A declaration says what happens.** The function name says what
    the function does. Each parameter name says what is passed. The
-   return type says what comes back. A reader who sees only the
-   header knows the behaviour.
+   return type says what comes back. A reader of the header alone
+   knows the behaviour.
 3. **Names come from the RFCs.** A field, a method, a status, a frame,
-   an opcode and a close code carry the name the RFC gives them. A
-   class is ordered as the RFC that defines it is ordered, and its
-   methods follow the section order. A name this tree invented for an
-   RFC thing is replaced.
+   an opcode and a close code carry the name the RFC gives them. The
+   order of a class follows the order of the RFC that defines it. The
+   order of its methods follows the section order. A name this tree
+   invented for an RFC thing is replaced.
 4. **No method hides anything.** No function wraps one library call.
    No function changes an argument unless its name says so. No
    function raises unless its name says so. No function does two
    things.
 5. **Every argument is const.** A function reads its inputs and
-   returns its result. There is no `out_value`, no `&sink`, no pointer
-   that is written through. What a function makes is its return type.
-   A function that changes an object is a method of that object.
+   returns its result. There is no `out_value`, no `&sink` and no
+   pointer that is written through. The return type is what the
+   function makes. A function that changes an object is a method of
+   that object.
 6. **Use what a linked library has.** `std::`, mruby, liburing,
    ls-hpack, zlib, miniz, picohttpparser, simdutf and ada are in the
    build. Nothing they answer is written here a second time. Part 3.3
    lists every second copy this tree holds today.
 7. **One Resource takes one Request and gives one Response.** There is
-   one Request type and one Response type. Every field of either is
-   named as the RFC names it.
+   one Request type and one Response type. Every field of either has
+   the name the RFC gives it.
 8. **An RFC that describes a procedure gives one method.** Where an
    RFC states steps, inputs and state for one thing, this tree has one
    function for it. Its arguments are the inputs the RFC names. Its
    state is the state the RFC names, passed in as a value. The pieces
    that are spread over the tree today are collected into that one
-   function. Part 3.9 lists the procedures the RFCs give and where the
-   pieces lie today.
+   function. Part 3.9 lists the procedures and where the pieces are.
 9. **Every function could run in a functional language as it is.** A
    function takes values and returns a value. It reads no global. It
    writes no global. It keeps no static. State that changes is a value
-   that goes in and a new value that comes out. An effect (a syscall, a
-   ring submission, a Ruby call) happens in one place, at the edge,
-   after a pure function decided it. CLAUDE.md's "decide, then do" is
-   this rule. Part 3.8 lists the global state that breaks it today.
-10. **The code is as fast, as hard to attack and as plain as it can be
-    made, by testing and adjusting again and again.** No step is done
+   that goes in and a new value that comes out. An effect happens in
+   one place, after a pure function decided it. An effect is a
+   syscall, a ring submission or a Ruby call. CLAUDE.md's "decide,
+   then do" is this rule. Part 3.8 lists the global state that breaks
+   it today.
+10. **The code is made as fast, as hard to attack and as plain as
+    possible, by repeated testing and adjusting.** No step is done
     when it compiles. A step is done when the suite, the conformance
     runs, the sanitizers, the fuzzer and the instruction count have
-    each run and nothing moved the wrong way. When one of them moves,
-    the code is adjusted and they run again. The loop ends when a
-    round changes nothing.
+    each run and none of them moved the wrong way. When one of them
+    moves, the code is adjusted and they run again. The loop ends when
+    a round changes nothing.
 11. **Every larger change is measured before and after.** Before the
-    change, the tree at its base commit is built and measured. After
-    the change, the same tree with the change is built the same way
-    and measured in the same session on the same machine, A B A B A B,
-    five runs each arm, medians compared, as `bench/how-to-measure.md`
-    says. Both numbers go into the pull request text with the row
-    from `bench/results/`. A change too small for the clock is
-    measured with `bench/instructions.sh`. A change with no before
-    number is not merged. "Larger" means: the decision loop, a parser, a
-    connection class, the reactor, HPACK, the send path, the body
-    path, or anything a bench script names.
+    change, the base commit is built and measured. After the change,
+    the same tree with the change is built the same way and measured
+    in the same session on the same machine. The arms alternate,
+    A B A B A B, five runs each, and the medians are compared, as
+    `bench/how-to-measure.md` says. Both numbers go into the pull
+    request text with the row from `bench/results/`. A change too
+    small for the clock is measured with `bench/instructions.sh`. A
+    change with no before number is not merged. "Larger" means: the
+    decision loop, a parser, a connection class, the reactor, HPACK,
+    the send path, the body path, or anything a bench script names.
 12. **Everything is written the way Kernighan and Ritchie wrote.** That
-    is two things. The layout: a function's opening brace on its own
-    line, every other brace on the line that opens its block, a space
-    after a keyword, the star on the name. `.clang-format` in this tree
-    already states it (`BreakBeforeBraces: Linux`), and the C++ Core
-    Guidelines name it as NL.17. The discipline: a function does one
-    thing and fits on one screen; a name is short where its scope is
-    short (`i`, `n`, `p`) and says its purpose where its scope is long;
-    the plain construct is chosen over the clever one; a loop is a
-    loop and not a template; the interface is a few functions over a
-    few types, each one small enough to hold in the head. Nothing is
-    written for a reader who is not there. `clang-format` runs on every
-    changed file before every commit, and the suite job checks that it
-    changes nothing.
+    is two things. First, the layout: a function's opening brace on
+    its own line, every other brace on the line that opens its block,
+    a space after a keyword, the star on the name. `.clang-format` in
+    this tree states it already (`BreakBeforeBraces: Linux`). The C++
+    Core Guidelines name it as NL.17. Second, the discipline: a
+    function does one thing and fits on one screen. A name is short
+    where its scope is short (`i`, `n`, `p`). A name says its purpose
+    where its scope is long. The plain construct is chosen over the
+    clever one. A loop is a loop and not a template. An interface is
+    a few functions over a few types. Nothing is written for a reader
+    who is not there. `clang-format` runs on every changed file before
+    every commit. The suite job checks that it changes nothing.
 
 ### 1.1 Where a name comes from
 
-A name in this tree is a word a reader already knows from the HTTP
-code of a large ecosystem, or from the C++ standard library. This
-tree invents no verb. The rule has a written source for C++ and a
-practice in every large HTTP library.
+A name in this tree is a word a reader knows from the HTTP code of a
+large ecosystem, or from the C++ standard library. This tree invents
+no verb.
 
-The written source is the C++ Core Guidelines, section NL, "Naming
-and layout". Its first rule is this plan's first rule: NL.1 "Don't
-say in comments what can be clearly stated in code." The ones that
-decide a name: NL.5 "Avoid encoding type information in names", NL.7
-"Make the length of a name roughly proportional to the length of its
-scope", NL.8 "Use a consistent naming style", NL.10 "Prefer
+The written source for C++ is the C++ Core Guidelines, section NL,
+"Naming and layout". Its first rule is this plan's first rule: NL.1
+"Don't say in comments what can be clearly stated in code." The rules
+that decide a name: NL.5 "Avoid encoding type information in names",
+NL.7 "Make the length of a name roughly proportional to the length of
+its scope", NL.8 "Use a consistent naming style", NL.10 "Prefer
 underscore_style names", NL.19 "Avoid names that are easily misread".
-The Google C++ Style Guide adds the one line that matters most: "The
-most important rule: names should describe purpose or intent", and
-"Function names should generally be verb-like". The standard library
-is the third source, and its verbs are the ones below: `find`,
-`parse` (`std::chrono::parse`), `format`, `from_chars`, `to_chars`,
-`is_regular_file`, `contains`, `starts_with`.
+The Google C++ Style Guide adds two lines: "The most important rule:
+names should describe purpose or intent", and "Function names should
+generally be verb-like". The standard library is the third source.
+Its verbs are `find`, `parse`, `format`, `from_chars`, `to_chars`,
+`is_regular_file`, `contains` and `starts_with`.
 
-What the HTTP libraries used by the most people call things:
+What the HTTP libraries with the most users call things:
 
 | verb | who uses it | for what |
 |---|---|---|
@@ -124,45 +126,45 @@ What the HTTP libraries used by the most people call things:
 | `get`, `set`, `add`, `del`, `values`, `has` | Go `Header.Get/Set/Add/Del/Values`; Java `getHeader/setHeader`; Express `req.get`, `res.set`; Rust `HeaderMap::get/insert/append/remove/contains_key` | one field of a field list |
 | `is_*`, `has_*`, `*_matches` | Werkzeug `is_resource_modified`, `is_byte_range_valid`, `is_hop_by_hop_header`; Apache `ap_meets_conditions`; Rust `Method::is_safe`, `is_idempotent` | a yes or no |
 | `handle`, `serve` | Go `ServeHTTP`, `ServeContent`, `ServeFile`; Java `doGet`, `service`; Erlang webmachine `handle_request`; nginx `*_handler` | the one entry that takes a request and gives a response |
-| `decide`, `decision` | Erlang webmachine `webmachine_decision_core:decision/1`; Liberator `decide`; the webmachine diagram itself | one node of the graph |
+| `decide`, `decision` | Erlang webmachine `webmachine_decision_core:decision/1`; Liberator `decide`; the webmachine diagram | one node of the graph |
 | `read`, `write`, `send`, `receive` | Go `ReadRequest`, `io.Reader`, `io.Writer`; Beast `http::read`, `http::write`; Proxygen `sendHeaders`, `sendBody`, `sendEOM`; Envoy `decodeHeaders`, `encodeHeaders` | bytes across a connection |
-| `encode`, `decode` | Envoy, ls-hpack `lshpack_enc_encode`, `lshpack_dec_decode`; Go `chunked` reader and writer | a wire coding |
+| `encode`, `decode` | Envoy; ls-hpack `lshpack_enc_encode`, `lshpack_dec_decode`; Go `chunked` reader and writer | a wire coding |
 | `redirect`, `error`, `not_found` | Go `Redirect`, `Error`, `NotFound`; Java `sendRedirect`, `sendError`; Flask `redirect`, `abort` | the named response shapes |
 | `status_text`, `reason_phrase`, `canonical_reason` | Go `StatusText`; Rust `StatusCode::canonical_reason`; Rack `HTTP_STATUS_CODES` | the phrase of a status |
 | `detect_content_type`, `sniff` | Go `DetectContentType`; the WHATWG standard's own word is "sniff" | the WHATWG table |
 | `quote_etag`, `unquote_etag`, `generate_etag` | Werkzeug | the entity tag forms |
-| `compile` | every regex library; Go `template.Must(template.New().Parse())`; Rust `Regex::new` | turn a description into a table once |
-| `suspend`, `resume` | C++ coroutines (`await_suspend`, `resume`); Kotlin; Python `asyncio` | stop a computation and go on later |
+| `compile` | every regex library; Go `template.New().Parse()`; Rust `Regex::new` | turn a description into a table once |
+| `suspend`, `resume` | C++ coroutines (`await_suspend`, `resume`); Kotlin; Python `asyncio` | stop a computation and continue it later |
 | `precompute`, `cache` | everywhere | compute once, read many times |
 
-The house words of this tree, and the word each becomes:
+The words this tree made up, and the word each becomes:
 
 | today | becomes | why |
 |---|---|---|
-| `walk`, `run_engine`, `resource_run` | `handle_request` for the whole graph, `decide` for one node; the pure step is `next_decision` | Erlang webmachine and Go both use the word; `walk` names a metaphor |
-| `fold`, `resource_fold`, `ws_fold`, `sse_fold` | `compile_resource` | a class becomes a table once, which is what every regex library calls compile |
+| `walk`, `run_engine`, `resource_run` | `handle_request` for the whole graph, `decide` for one node; the pure step is `next_decision` | Erlang webmachine and Go use these words |
+| `fold`, `resource_fold`, `ws_fold`, `sse_fold` | `compile_resource` | a class becomes a table once; every regex library calls that compile |
 | `park`, `parked`, `run_parkable` | `suspend`, `suspended`, `SuspendedRequest` | the language's own coroutine word |
-| `lend`, `lent`, `unlend`, `LentBody`, `kLendFloor`, `zc_*`, `zero_copy_threshold`, `kZeroCopyDefault` | `send_body_without_copy_above`, `BodySentWithoutCopy`, `kSendBodyWithoutCopyAboveBytes` | what happens and why: the body is sent from the Ruby string's own bytes through an `iovec`, held until the send drains, and the copy into the send buffer is the cost avoided. It is not zero copy: the tree has no `MSG_ZEROCOPY` and no `SEND_ZC` (`assets.sh`'s header records that `SEND_ZC` was tried and refused). Decision 7 |
+| `lend`, `lent`, `unlend`, `LentBody`, `kLendFloor`, `zc_*`, `zero_copy_threshold`, `kZeroCopyDefault` | `send_body_without_copy_above`, `BodySentWithoutCopy`, `kSendBodyWithoutCopyAboveBytes` | the name says what happens and why. The body is sent from the Ruby string's own bytes through an `iovec`. The string is held until the send drains. The copy into the send buffer is the cost avoided. It is not zero copy: the tree has no `MSG_ZEROCOPY` and no `SEND_ZC`. The header of `bench/assets.sh` records that `SEND_ZC` was tried and refused. Decision 7 |
 | `spell_*` (`spell_answer`, `spell_error`, `spell_fingerprint`, `spell_content_length`, `spell_steering`) | `format_*`, `serialize_*` | C++ `std::format`, Go `Write`, Werkzeug `dump` |
 | `say_*`, `open_vm_or_say` | `print_*`, `report_*` | plain words |
 | `bake`, `baked`, `has_baked` | `precomputed` | what it is |
 | `konst`, `KonstSet`, `KonstAnswers`, `KonstValue` | `constant_*`, `PrecomputedAnswers` | English |
-| `cats`, `Cat`, `disable_http_cats` | `error_page_images`, `disable_error_page_images` | a reader outside the joke |
-| `spill`, `BodySpill`, `spill_dir` | `body_file`, `BodyTemporaryFile`, `body_file_directory` | Go `os.CreateTemp`; "spill" is a database word for the same, and the plainer one wins |
-| `sink`, `Sink`, `out_answer` | a return value; where a stream is real, `Writer` | Go `io.Writer`; under rule 5 most sinks are the return type |
+| `cats`, `Cat`, `disable_http_cats` | `error_page_images`, `disable_error_page_images` | what it is |
+| `spill`, `BodySpill`, `spill_dir` | `body_file`, `BodyTemporaryFile`, `body_file_directory` | Go `os.CreateTemp`; the plain word |
+| `sink`, `Sink`, `out_answer` | a return value; where a stream is real, `Writer` | Go `io.Writer`; under rule 5 most sinks become the return type |
 | `carry`, `carry_` | `unparsed_bytes`, `leftover` | what it holds |
 | `Held`, `Released`, `Seen`, `HeldList`, `Ender` | `ScopeGuard`, or `std::unique_ptr` with a deleter | the C++ idiom's name |
 | `Took`, `Took::kOwed` | `HandleResult`, `awaiting_body` | a result, named as one |
 | `Round`, `RunRound`, `round_at`, `RoundOut`, `spell_next_round` | `Request`, `WorkerAnswers`, `ResponseWriter`, `write_next_response` | "round" meant four things |
-| `Bundle`, `Plan`, `Seg` | `PrecomputedRoute`, `SendPlan` stays (it is a plan of iovecs), `iovec` | what each holds |
-| `tier` (asset tier, konst tier, run tier) | drop the word; each is a function with the name of what it answers | `serve_asset`, `answer_from_precomputed`, `handle_request` |
+| `Bundle`, `Plan`, `Seg` | `PrecomputedRoute`; `SendPlan` stays, it is a plan of iovecs; `iovec` | what each holds |
+| `tier` (asset tier, konst tier, run tier) | the word goes; each is a function named for what it answers | `serve_asset`, `answer_from_precomputed`, `handle_request` |
 | `steering` | `request_line_summary` | what goes in the fingerprint |
-| `word` in `word_has_zero_octet` | gone with the SWAR (Part 4.1) or `uint64_t octets` | NL.19, misread as a text word |
-| `WM_UNREACHABLE` | `std::unreachable()` | C++23; until then the macro stays and is the one macro in the tree |
+| `word` in `word_has_zero_octet` | `uint64_t octets` | NL.19; "word" reads as a text word |
+| `WM_UNREACHABLE` | `std::unreachable()` | C++23; until then the macro stays as the one macro in the tree |
 
 The graph's own names stay: `B13`, `G7`, `service_available?`,
 `resource_exists?`, `content_types_provided`. They are the diagram's
-and webmachine-ruby's, and an application author reads them in both.
+and webmachine-ruby's. An application author reads them in both.
 
 ## 2. Numbers before the work
 
@@ -185,9 +187,9 @@ and webmachine-ruby's, and an application author reads them in both.
 | responsibilities in `http2.cpp` (2808 lines) | 16 |
 | file-scope and static mutable variables in `src/` | 41 (Part 3.8) |
 | texts that build the application at boot | 2 (Part 3.11) |
-| open edges of the thread change | 7 (Part 3.12) |
+| unfinished parts of the thread change | 7 (Part 3.12) |
 
-Each number is measured again at the end of each step in Part 4.
+Each number is measured again at the end of each step.
 
 ## 3. Findings
 
@@ -215,19 +217,19 @@ damage. Most definitions still carry the right name. Examples from
 | 2562 | `render(const Page &bytes, std::string &out_value)` | a page description |
 | 2461 | `entry_verdict(const AssetEntry &entry, const AssetRequest &round)` | the request |
 
-The five audit reports found the same in every file. The words that
-were sprayed in are `count`, `sqe`, `round`, `conn`, `headers`,
-`bytes`, `field`, `text`, `window`, `retry`, `stream_id`, `poll_tag`,
-`index`, `method`, `answer`, `group`, `dynamic_body`, `block`, `one`,
-`other`, `status_text`, `error_message`, `writer`, `prefix_variants`.
-Local variables carry them too: `http1.cpp:1133` names a time
-`status_text`, `http1_class.cpp:275` names a hex digit
-`dynamic_body`, `http1.cpp:1862` names a route index `writer`.
+The five audit reports found the same in every file. The wrong words
+are `count`, `sqe`, `round`, `conn`, `headers`, `bytes`, `field`,
+`text`, `window`, `retry`, `stream_id`, `poll_tag`, `index`, `method`,
+`answer`, `group`, `dynamic_body`, `block`, `one`, `other`,
+`status_text`, `error_message`, `writer` and `prefix_variants`. Local
+variables carry them too. `http1.cpp:1133` names a time
+`status_text`. `http1_class.cpp:275` names a hex digit `dynamic_body`.
+`http1.cpp:1862` names a route index `writer`.
 
 `tools/rename-symbol.py` has a form that finds a symbol by the first
 text match of its name in a file. In a 3000-line file the first match
 is rarely the symbol meant. clangd then renames the wrong symbol, and
-the result compiles. That form is deleted (Part 4, step 1).
+the result compiles. Step 1 deletes that form.
 
 ### 3.2 Argument packs and vague type names
 
@@ -246,33 +248,33 @@ has a name that says nothing about what is inside:
 `Wanted`, `SetupCall`, `Folding`, `Asked`, `At`, `Bound`, `Param`,
 `Want`, `ResumeAsk`, `Thrown`, `FeedCall`, `SaveAsk`, `Form`.
 
-Some of them are the same shape twice: `H2WsAsk` and `H2SseAsk` have
-the same seven fields; `Asked` and `NamedSym` are the same pair;
-`ws::Frame` repeats four fields of `ws::Head`; `Resolved` and `Bound`
+Some of them are the same shape twice. `H2WsAsk` and `H2SseAsk` have
+the same seven fields. `Asked` and `NamedSym` are the same pair.
+`ws::Frame` repeats four fields of `ws::Head`. `Resolved` and `Bound`
 differ by one flag.
 
-Under rule 5 most of these disappear. A function that returned its
-result needs no `RunAnswer`, `BoundOut`, `WsAdmit`, `Negotiated`,
-`Parked` or `Raised`. A function with three const arguments needs no
-pack. A pack that survives is a real value and is named as one:
-`ByteRange`, `MediaType`, `FieldLine`.
+Under rule 5 most of these go. A function that returns its result
+needs no `RunAnswer`, `BoundOut`, `WsAdmit`, `Negotiated`, `Parked`
+or `Raised`. A function with three const arguments needs no pack. A
+pack that survives is a real value and is named as one: `ByteRange`,
+`MediaType`, `FieldLine`.
 
 Other names that say nothing or say the wrong thing: `Held` (three
-times, in `http1.hpp`, `ring.hpp` and `RunState::HeldTask`),
-`Round` (two unrelated types, `Http1::Round` and `Conn::Round`),
-`Bundle`, `konst`, `KonstSet`, `KonstAnswers`, `KonstValue`,
-`Conn::Slow`, `ConnFailed` (an exception), `Released`, `Seen`,
-`HeldList` (four scope guards for one job), `BootQueue` (it is the
-reactor's ring too), `Method` in `wsconn.cpp` (a class and a symbol,
-where every other file means an HTTP method), `Data` in `H2Stream`
-(a destination, not data), `H2Control` (any frame), `RoundOut` (a
-writer), `stream` in `Http1` (lowercase, and not a stream).
+times, in `http1.hpp`, `ring.hpp` and `RunState::HeldTask`); `Round`
+(two unrelated types, `Http1::Round` and `Conn::Round`); `Bundle`;
+`konst`, `KonstSet`, `KonstAnswers`, `KonstValue`; `Conn::Slow`;
+`ConnFailed` (an exception); `Released`, `Seen`, `HeldList` (four
+scope guards for one job); `BootQueue` (it is the reactor's ring
+too); `Method` in `wsconn.cpp` (a class and a symbol, where every
+other file means an HTTP method); `Data` in `H2Stream` (a
+destination, not data); `H2Control` (any frame); `RoundOut` (a
+writer); `stream` in `Http1` (lowercase, and not a stream).
 
-House words that are not English and not RFC: `fold` (compile a
-class into a table), `park` (suspend a coroutine), `lend` (send
-without a copy), `spell` (format), `say` (print), `konst` (constant),
-`bake` (compute once at start), `cat` (an error page picture). Each
-gets the plain word.
+Words that are not English and not RFC: `fold` (compile a class into
+a table), `park` (suspend a coroutine), `lend` (send without a copy),
+`spell` (format), `say` (print), `konst` (constant), `bake` (compute
+once at start), `cat` (an error page picture). Each gets the plain
+word of Part 1.1.
 
 ### 3.3 Second copies of what a library has
 
@@ -286,7 +288,7 @@ gets the plain word.
 | `Rearm`, `H2Block`, `Slot` | the one field each holds |
 | `MemWriter`, `FileWriter` | the sink itself |
 | `H2BlockOut` | `std::span<unsigned char>` and a returned count |
-| `hpack_length_spell`, `hpack_name_index_spell`, and the static-table indices written as bare numbers (`0x88`, `8`, `18`, `26`, `30`, `31`, `34`, `44`, `59`) in `h2_build_block`, `h2_build_asset_blocks`, `h2_build_asset_shared` and the 206 and 416 arms | measured piece by piece against ls-hpack (decision 5): what ls-hpack does exactly as well is deleted; what stays becomes one `hpack` namespace with the static table of Appendix A as a named enum, so `0x88` reads `encode_indexed(StaticTable::status_200)` |
+| `hpack_length_spell`, `hpack_name_index_spell`, and the static-table indices written as bare numbers (`0x88`, `8`, `18`, `26`, `30`, `31`, `34`, `44`, `59`) in `h2_build_block`, `h2_build_asset_blocks`, `h2_build_asset_shared` and the 206 and 416 arms | measured piece by piece against ls-hpack (decision 5). What ls-hpack does exactly as well is deleted. What stays becomes one `hpack` namespace with the static table of Appendix A as a named enum, so `0x88` reads `encode_indexed(StaticTable::status_200)` |
 | `u32_put`, `h2_u32`, `h2_u16` | `htonl`, `ntohl`, `ntohs`, `std::memcpy` |
 | `tok_eq`, `ci_eq`, `ascii_same`, `text_is_same_ignoring_case`, `sniff::media_type_is_same` | one `tok_eq`; the other four are copies |
 | three lowercase loops (`string_copy_lowercased`, `request.cpp:233`, `request.cpp:673`) | one function, or `std::ranges::transform` |
@@ -303,7 +305,7 @@ gets the plain word.
 | `extra_field_find` in C++ and two copies in the Rakefile | one reader of APPNOTE 4.5.2 |
 | `entry_wire_iov` and `entry_copy_wire` | one function that yields the three segments |
 | `path_is_regular_file`, `save_make_directory`, `body_copy_to_path` (memory arm), `file_read_whole_or_absent` | `std::filesystem` |
-| `accept_member_edge`, `accept_holds_media_type`, `accept_names_anything`, `accept_names_one_of_ours` | `choose_media_type`, which the same function already calls |
+| `accept_member_edge`, `accept_holds_media_type`, `accept_names_anything`, `accept_names_one_of_ours` | `choose_media_type`, which the same function calls already |
 | `media_type_base`, `media_type_params`, `param_take_next`, `param_find_named`, `media_params_agree`, `media_type_pattern_matches`, `media_type_without_parameters` | one media type parser |
 | `kFaces`, `status_title`, `status_source` | `reason(status)` |
 | `access_log_method_name`, `kMethodName[]`, the switch in `request.cpp:77` | one method name table |
@@ -314,17 +316,17 @@ gets the plain word.
 | `handler_call_with_no_args` and `handler_call_in_protected_call` | one trampoline with an argc |
 | `exception_text`'s join loop | `mrb_ary_join` |
 | `yield_array_entries` | `mrb_yield_argv` over `RARRAY_PTR` with the arena saved |
-| about 90 `std::string_view(RSTRING_PTR(v), RSTRING_LEN(v))` sites and every `mrb_str_new(mrb, p, n)` return | mruby-c-ext-helpers. It is in the build, as CLAUDE.md says, through mruby-cbor, mruby-chrono, mruby-lmdb, mruby-toml and four more gems that depend on it. Nothing in `src/` includes it, and `mrbgem.rake` does not name it. Step 1 names it, because a gem this tree calls directly is a direct dependency. |
-| `Config.check_whole_number` and `Config.check_text` in Ruby | the same bounds checked again in `application.cpp` |
-| hand pointer arithmetic | `std::string_view`, `std::span`, `std::distance`, `std::next`. Every C++ file breaks CLAUDE.md here. |
+| about 90 `std::string_view(RSTRING_PTR(v), RSTRING_LEN(v))` sites and every `mrb_str_new(mrb, p, n)` return | mruby-c-ext-helpers. It is in the build, as CLAUDE.md says: mruby-cbor, mruby-chrono, mruby-lmdb, mruby-toml and four more gems depend on it. Nothing in `src/` includes it. `mrbgem.rake` does not name it. Step 1 names it, because a gem this tree calls directly is a direct dependency |
+| `Config.check_whole_number` and `Config.check_text` in Ruby | the same bounds, checked again in `application.cpp` |
+| hand pointer arithmetic | `std::string_view`, `std::span`, `std::distance`, `std::next`. Every C++ file breaks CLAUDE.md here |
 | `passwd.cpp:106` and `webmachine-passwd/main.cpp:160`, two copies of the argon2 context fill | mruby-argon2, a declared dependency nothing uses |
 | the LMDB layer in `passwd.cpp:66-230` and `webmachine-passwd/main.cpp:134` | mruby-lmdb, a declared dependency nothing uses |
-| `text_of`, `flag_of`, `switch_of`, `number_of` in `webmachine-server/main.cpp` | the typed hash typedargs already returned |
-| `setting_take_string`, `setting_take_int`, `section_take` in `config.cpp` | the hash mruby-toml already returned |
+| `text_of`, `flag_of`, `switch_of`, `number_of` in `webmachine-server/main.cpp` | the typed hash typedargs returned already |
+| `setting_take_string`, `setting_take_int`, `section_take` in `config.cpp` | the hash mruby-toml returned already |
 | three month name tables (`date_core`, `read_month_name`, logd `spell_ts`), two hex tables | one of each, or `std::format` |
 | eleven argument bundles that exist because `mrb_protect_error` carries one `void *` (`OpenPack`, `AnswerThreadBoot`, `TomlAsk`, `SectionAsk`, `CrossAsk`, `BuildOne`, `JobBody`, `BlockRun`, `UnknownFlag`, `Tokens`, `Form`) | one lambda trampoline over `mrb_protect_error`, written once |
-| six hand-written `mrb_gc_arena_save`/`restore` pairs in `compute_task.cpp` and `watcher.cpp` | `ArenaGuard`, which four other files already use |
-| the spin wait on `ring_fd` (`server.cpp:486`) | `std::condition_variable`, which `ComputePool` already uses for the same question |
+| six hand-written `mrb_gc_arena_save`/`restore` pairs in `compute_task.cpp` and `watcher.cpp` | `ArenaGuard`, which four other files use already |
+| the spin wait on `ring_fd` (`server.cpp:486`) | `std::condition_variable`, which `ComputePool` uses for the same question |
 | `WM_HANDOVER_SEND`/`TAKE`, `slots_lock` and atomics on one handover | one ordering mechanism |
 | three copies of "open a VM and report a gem init raise" (`main.cpp:562`, `open_vm_or_say`, `server.cpp:446`) | one |
 | three copies of "get an sqe, submit when full, retry once" (`sqe_or_raise`, `watcher_free`, `compute_task.cpp:948`) | one |
@@ -334,21 +336,21 @@ gets the plain word.
 The decision graph is one table, `kFlow`. Five pieces of code execute
 it:
 
-1. `flow::walk` (`webmachine.hpp:489`), constants only, no Ruby.
-2. `flow::answer` (`webmachine.hpp:600`), the shortcut in front of 1.
-3. `run_engine` (`resource.cpp:1486`), with Ruby, with suspend and
+1. `flow::walk` (`webmachine.hpp:489`): constants only, no Ruby.
+2. `flow::answer` (`webmachine.hpp:600`): the shortcut in front of 1.
+3. `run_engine` (`resource.cpp:1486`): with Ruby, with suspend and
    resume. Its fall-through tail repeats the loop body of 1.
-4. `walk_compiled` and `status_reached_from` (`webmachine.hpp:608`),
-   a template unrolling with no caller outside five `static_assert`s
+4. `walk_compiled` and `status_reached_from` (`webmachine.hpp:608`):
+   a template unrolling. Its only callers are five `static_assert`s
    that repeat five earlier `static_assert`s.
 5. `lands_on`, `reaches_a_node_that_reads_the_request`,
-   `shortcut_for`, `block_skips_are_the_graphs`, each with its own
-   copy of the test `kind == kRequest || node == kC4`.
+   `shortcut_for`, `block_skips_are_the_graphs`: each has its own copy
+   of the test `kind == kRequest || node == kC4`.
 
 One `next_decision` and one `handle_request` serve. The speed of the
 constant path does not come from a second execution. It comes from a
 status that was computed once, at route time, for the plain request
-of each method. That table stays, filled by the same `next_decision`
+of each method. That table stays. The same `next_decision` fills it
 at route time.
 
 ### 3.5 One request under three names, and the Ruby surface
@@ -356,8 +358,8 @@ at route time.
 `ReqFacts` holds the booleans the graph reads. `ReqValues` holds
 pointers to the field values. `ReqView` holds the target, the method
 and the content. All three describe one request. One `Request` holds
-all of it, as offsets into the one head buffer, so nothing is rebased
-when the buffer moves.
+all of it, as offsets into the one head buffer. Then nothing is
+rebased when the buffer moves.
 
 On the Ruby side one field is reachable under several names:
 
@@ -378,32 +380,32 @@ On the Ruby side one field is reachable under several names:
 - `has_body?` and `body` disagree on an empty body.
 
 `request` is defined on three classes from one C function. The
-websocket and sse resources define no method from C; their callback
-names are found by search in the fold.
+websocket and sse resources define no method from C. Their callback
+names are found by search at compile time.
 
 Every name that is webmachine-ruby's stays (decision 1). What is
-reachable twice stays reachable twice; what changes is that each name
-is defined once, over one `http::Request`.
+reachable twice stays reachable twice. What changes: each name is
+defined once, over one `http::Request`.
 
 ### 3.6 Where the facts in the comments go
 
-3756 comment lines were read. They hold four kinds of fact, and each
-kind has one destination.
+3756 comment lines were read. They hold four kinds of fact. Each kind
+has one destination.
 
 | kind | example | destination |
 |---|---|---|
-| an RFC clause | `// RFC 9110 13.1.3: a date in the future is ignored (l15)` | the namespace and the function name: `http::preconditions::if_modified_since_in_the_future_is_ignored`; and a test whose name cites the clause |
-| a measured number | `kLendFloor = 4096`, the `sendmsg` cost, the 128 KiB zero-copy default | `bench/results/` already holds the row; `docs/explanation/` gets one page, `numbers-that-were-measured.md`, that lists each constant, its value, the row it came from and the script that moves it |
-| a kernel or library quirk | `EINTR` on `close(2)`, io-wq affinity, `MSG_RING` between rings, `mrb_noreturn` under `-std=c++20`, `MRB_FUNCALL_ARGC_MAX` | a name (`close_ignoring_eintr`), or a `static_assert` where it is a constant, or `docs/explanation/reactor.md` where it is a design fact |
+| an RFC clause | `// RFC 9110 13.1.3: a date in the future is ignored (l15)` | the function name, for example `http::if_modified_since_in_the_future_is_ignored`, and a test whose name cites the clause |
+| a measured number | `kLendFloor = 4096`, the `sendmsg` cost, the 128 KiB default | `bench/results/` holds the row already; `docs/explanation/` gets one page, `numbers-that-were-measured.md`, that lists each constant, its value, the row it came from and the script that moves it |
+| a kernel or library fact | `EINTR` on `close(2)`, io-wq affinity, `MSG_RING` between rings, `mrb_noreturn` under `-std=c++20`, `MRB_FUNCALL_ARGC_MAX` | a name (`close_ignoring_eintr`); a `static_assert` where it is a constant; `docs/explanation/reactor.md` where it is a design fact |
 | a bug that was fixed | `// A guard that returns instead of raising hides our own bug` | a test in `test/` or `bintest/` that fails when the bug returns |
 
-A comment that is none of the four is deleted with nothing kept. That
-is most of them: they restate the code below them.
+A comment that is none of the four is deleted with nothing kept. Most
+comments are of that kind. They restate the code below them.
 
-Two comments are already false today: `wsconn.cpp:884` names
-`take_pending`, which no longer exists; `wsconn.cpp:272` describes an
-arity check that the next comment says does not happen. Two comments
-each claim to be the only writer of a field line (`resource.cpp:598`,
+Two comments are false today. `wsconn.cpp:884` names `take_pending`,
+which no longer exists. `wsconn.cpp:272` describes an arity check that
+the next comment says does not happen. Two comments each claim to be
+the only writer of a field line (`resource.cpp:598`,
 `response.cpp:115`).
 
 ### 3.7 Dead code
@@ -423,9 +425,9 @@ declarations at `http1.hpp:563`; the three empty namespace blocks in
 `#include <simdutf.h>` in `test/wm_ruby.cpp`; `watcher_slot`,
 `watcher_source_of`, `watcher_block_of`, `close_or_throw`.
 
-`tools/comment-anchors.sh` and its baseline: nothing runs it, its
-baseline is in a format its own reader cannot parse, and after this
-plan it measures an empty set.
+`tools/comment-anchors.sh` and its baseline: nothing runs it. Its
+baseline is in a format its own reader cannot parse. After this plan
+it measures an empty set.
 
 ### 3.8 Global state
 
@@ -448,16 +450,16 @@ taking it as an argument:
 | `request.cpp`, `response.cpp` | `request_bind`, `response_bind`: the current request and resource are set into file scope before a callback and read from there inside it |
 
 The last row is the widest one. Every Ruby accessor of `request` and
-`response` reads the request from a file-scope pointer that the
-caller set a moment before. Under rule 9 the request is a value the
-Ruby object holds, and the accessor reads it from `self`.
+`response` reads the request from a file-scope pointer. The caller
+set that pointer a moment before. Under rule 9 the request is a value
+the Ruby object holds. The accessor reads it from `self`.
 
-Server-wide state that must exist once (the ring, the assets map, the
-error pages, the mime table, the docroot descriptor) becomes one
-`Server` value built in `main` and passed down. A worker VM gets a
-`Worker` value the same way. Nothing is found by reaching up.
+Server-wide state that must exist once becomes one `Server` value.
+That is the ring, the assets map, the error pages, the mime table and
+the docroot descriptor. `main` builds it and passes it down. A worker
+VM gets a `Worker` value the same way. No function reads a global.
 
-### 3.9 Procedures the RFCs give, and where their pieces lie
+### 3.9 Procedures the RFCs give, and where their pieces are
 
 Rule 8 applied to what the tree does today. Each row is one method in
 the skeleton. The right column is what the method collects.
@@ -472,14 +474,14 @@ the skeleton. The right column is what the method collects.
 | 9110 5.6.7, HTTP-date: three formats in, IMF-fixdate out | `parse_http_date`, `format_imf_fixdate` | `parse_http_date`, `read_fixed_digits`, `read_month_name`, `epoch_from_civil`, `Civil`, `date_core`, `write_two_digits`, `mtime_spell_imf_date`, `patch_date`, `head_patch_date`, `Listing.stamp` |
 | 9110 10.2.2 and 3986 5.3, Location and reference resolution | `http::resolve_location(base, reference)` | `uri_join`, `UriRef`, `base_uri`, the `create_path` join in `run_node_n11` |
 | 9110 6.1 and 9112 6.3, message body length: the seven ordered rules | `http1::message_body_length(request_fields) -> BodyLength` | `WireFacts`, `transfer_encoding_fold`, `connection_field_holds_token`, `head_framing_status`, `parse_content_length`, `body_take_status` |
-| 9112 7.1.3, decoding chunked | `phr_decode_chunked`, called from `http1::Connection` and nothing of ours (decision 3) | `take_chunked`, `ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`, `chunk_tchar`, `chunk_hex`, `hex_digit` |
+| 9112 7.1.3, decoding chunked | `phr_decode_chunked`, called from `http1::Connection`, nothing of ours (decision 3) | `take_chunked`, `ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`, `chunk_tchar`, `chunk_hex`, `hex_digit` |
 | 9112 9.3, persistence: the version, the Connection field, the close | `http1::connection_persists(version, request_fields, response_fields)` | `WireFacts::conn_close`, `persist`, `Variants` (three copies of every head for three Connection lines), `ConnectionOption` |
 | 9112 2.1 and 9110 6.1, serialize a response head | `http1::serialize_head(status, fields) -> string` | `head_spell`, `SpelledHead`, `answer_assemble`, `assemble_dynamic`, `build_one_variant`, `build_open_prefix`, `file_spell`, `spell_error`, `run_append_field`, `header_append_key_value` |
 | 9113 4.1, frame header in and out | `http2::parse_frame_header`, `serialize_frame_header` | `H2FrameHead`, `h2_u32`, `h2_u24`, `h2_u16`, `u32_put`, `control_frame_emit`, `H2Control` |
 | 9113 8.3.1 and 8.2.1, request pseudo-headers and field validity | `http2::validate_request_fields(decoded) -> Request or ErrorCode` | the loop in `h2_dispatch` (`http2.cpp:640-1095`), `h2_field_ok`, `h2_path_ok`, `h2_word_is_path`, `h2_wire_header_ok`, `h2_trailer_name_ok`, `kH2NameOctet` |
 | 9113 5.2 and 6.9, flow control: two windows, WINDOW_UPDATE, the 2^31-1 bound | `http2::apply_window_update(state, increment) -> state or ErrorCode`, `sendable(state, wanted) -> size` | `h2_credit_connection`, `h2_send_step`, `stream`, `h2_advance`, `flow_window`, the arms at `http2.cpp:1844-2022, 2770-2792` |
 | 9113 5.1, stream states | `http2::Stream::transition(event) -> Stream or ErrorCode` | `H2State::open`, `close_stream`, `h2_is_idle`, `h2_reset_stream`, the state checks spread through `h2_feed` |
-| 7541 5.1, 6.1, 6.2 and Appendix A, HPACK encoding | `hpack::encode_integer(value, prefix_bits)`, `encode_indexed(StaticTable)`, `encode_literal_with_name_index(StaticTable, value)`, `encode_literal(name, value)`, each kept only where ls-hpack is not as good (decision 5); decoding stays ls-hpack | `hpack_length_spell`, `hpack_name_index_spell`, the block builders, the bare indices, `h2_enc_field`, `H2BlockOut`, `H2State::enc_ins`, the head cache |
+| 7541 5.1, 6.1, 6.2 and Appendix A, HPACK encoding | `hpack::encode_integer(value, prefix_bits)`, `encode_indexed(StaticTable)`, `encode_literal_with_name_index(StaticTable, value)`, `encode_literal(name, value)`; each is kept only where ls-hpack is not as good (decision 5); decoding stays ls-hpack | `hpack_length_spell`, `hpack_name_index_spell`, the block builders, the bare indices, `h2_enc_field`, `H2BlockOut`, `H2State::enc_ins`, the head cache |
 | 6455 4.2.2, the server opening handshake: the eight checks and the response | `websocket::open_handshake(request) -> Response or status` | `ws_upgrade`, `ws_admit`, `WsAdmit`, `accept_key_compute`, `base64_encode_digest`, `ws_version`, `h2_extended_connect`, `H2Connect`, `websocket::permessage_deflate::negotiate` |
 | 6455 5.2 to 5.6, framing: header, masking, fragmentation, control frames | `websocket::parse_frame(state, bytes) -> (state, frames, consumed)`, `serialize_frame(frame)` | `read_head`, `header_need`, `header_build`, `unmask_copy`, `ws::Head`, `ws::Frame`, `ws::Mask`, `ws::Message`, `admit`, `frame_begin`, `data_frame_emit`, `message_deliver`, `utf8_prefix_may_still_be_valid` |
 | 6455 7, closing: code, reason, the handshake, the abnormal cases | `websocket::close(state, code, reason) -> (state, frame)` | `close_payload_build`, `close_read`, `ws::Close`, `close_code_of_symbol`, `ws_going_away`, `stream_report_close` |
@@ -490,19 +492,19 @@ the skeleton. The right column is what the method collects.
 | 9110 15 and 10.2.1, the status line and Allow | `reason_phrase(status)`, `allow_field_value(methods)` | `reason`, `kFaces`, `status_title`, `status_source`, `run_append_allow`, `H2BlockFields::allow`, `kAllow` |
 
 Every row also names an interface of the functional shape. A
-connection is a value, the bytes are a value, and the result is a new
-connection value with what to send. The ring then sends it. That is
+connection is a value. The bytes are a value. The result is a new
+connection value and what to send. The ring then sends it. That is
 the only place a send happens.
 
 ### 3.10 Files that hold more than one thing
 
 - `http1_wire.cpp` holds only WebSocket code.
-- `http1_members.cpp` holds the body spill and the h2 connection
+- `http1_members.cpp` holds the body file and the h2 connection
   state.
 - `http2.cpp` holds `Http1::pending` and `Http1::spell_next_round`,
   which carry the h1 paths.
-- `ring_setup.hpp` holds rlimit code, ring bring-up and the operation
-  tag enums, which belong with `Op`.
+- `ring_setup.hpp` holds rlimit code, ring setup and the operation
+  tag enums. The enums belong with `Op`.
 - `webmachine.hpp` (2842 lines) holds the graph, the router, the
   logger, the passwd record, the http helpers, the request, the
   resource, the compute pool, the watcher, gzip, mime, assets, error
@@ -512,96 +514,94 @@ the only place a send happens.
 ### 3.11 The boot is written twice, and one flag is inverted
 
 `server.cpp` builds the application twice, in two texts that must
-agree: once for the acceptor (`server.cpp:652-694`) and once per
-answering thread (`answer_thread_boot`, `server.cpp:366-385`). Both
-call `app_load`, `app_registered_all`, `app_inputs_build`, `new
-Http1`, `serve_docroot`, `open_error_assets` and the two thresholds.
-With `--threads=N` an application's `ready` hook runs N times and
-`conf.url` is written N times.
+agree. One text is for the acceptor (`server.cpp:652-694`). The other
+runs once per answering thread (`answer_thread_boot`,
+`server.cpp:366-385`). Both call `app_load`, `app_registered_all`,
+`app_inputs_build`, `new Http1`, `serve_docroot`, `open_error_assets`
+and the two thresholds. With `--threads=N` an application's `ready`
+hook runs N times. `conf.url` is written N times.
 
 Other things stated more than once: the "first application that
-names one wins" loop, six times in one function; the config search
-path, three times; the stop signal mask, twice; the privacy
-vocabulary, four times.
+names one decides" loop, six times in one function; the config search
+path, three times; the stop signal mask, twice; the privacy words,
+four times.
 
-The four privacy statements do not agree, and that is a bug in the
+The four privacy statements do not agree. That is a bug in the
 shipped binary. `docs/how-to/logs.md:28`,
 `docs/reference/configuration.md:209`,
 `docs/reference/command-line.md:159` and the generated config file
-(`config.cpp:204`) all say: `full` keeps the address, `anon` drops
-the host part, `none` writes no address. `webmachine-logd`
-(`tools/webmachine-logd/main.cpp:169-204`) does the reverse: `full`
-writes `-`, `none` writes the whole address, and the DNT promotion
-turns `none` into `anon`. The warning in `server.cpp:622` follows the
+(`config.cpp:204`) all say the same: `full` keeps the address, `anon`
+drops the host part, `none` writes no address. `webmachine-logd`
+(`tools/webmachine-logd/main.cpp:169-204`) does the reverse. `full`
+writes `-`. `none` writes the whole address. The DNT promotion turns
+`none` into `anon`. The warning in `server.cpp:622` follows the
 daemon, not the documentation. An operator who writes
 `privacy = "none"` to log no address logs every address in full. The
-documentation is the contract, so the daemon is fixed, in step 1,
-with a bintest that reads one line at each level.
+documentation is the contract. Step 1 fixes the daemon, with a
+bintest that reads one line at each level.
 
 Name collisions across files: `Registry` means three things
 (`application.cpp:30`, `compute_task.cpp:134`,
-`Webmachine::Workers::Registry`); `Setting` means two
-(`application.cpp:90`, `config.cpp:64`); `Slot` in
-`compute_task.cpp:74` is a job, and its fields `out_ask` (the answer),
-`deadline` (a duration) and `started` (a tag) say the wrong thing;
+`Webmachine::Workers::Registry`). `Setting` means two
+(`application.cpp:90`, `config.cpp:64`). `Slot` in
+`compute_task.cpp:74` is a job. Its fields `out_ask` (the answer),
+`deadline` (a duration) and `started` (a tag) say the wrong thing.
 `registry_of_this_vm` returns a process-wide static.
 
-Threads, as they are today, so the `Server` and `Worker` values of
-Part 3.8 are cut along the real crossings:
+The threads as they are today, so that the `Server` and `Worker`
+values of Part 3.8 are cut along the real crossings:
 
 | thread | owns | talks through |
 |---|---|---|
 | the acceptor | the listeners, one VM, one ring | `MSG_RING` to the answering threads and the compute workers |
 | answering threads (`--threads`) | one VM, one ring, one `Http1` each | `MSG_RING` in; a spin on `ring_fd` at boot |
-| compute workers | one VM, one ring each | `MSG_RING` both ways, a separate control ring for stop |
+| compute workers | one VM, one ring each | `MSG_RING` both ways; a separate control ring for stop |
 | `webmachine-logd`, two processes | a socketpair | `LogRec` and `ErrRec`, a fixed header then the bytes |
 
-### 3.12 The change that is in flight
+### 3.12 The unfinished change on `reactor`
 
-This branch is cut from `reactor`, and `reactor` is in the middle of
-one change: answering from several threads. The acceptor takes every
-peer and hands it to a thread's ring with `MSG_RING`
-(`ring.hpp:1017-1094`); each thread has its own VM, its own `Http1`
-and its own ring (`server.cpp:353-520`); the boot ring became
-`BootQueue` (commit 52ff900); the connection table became
+This branch is cut from `reactor`. `reactor` is in the middle of one
+change: answering from several threads. The acceptor takes every peer
+and hands it to a thread's ring with `MSG_RING`
+(`ring.hpp:1017-1094`). Each thread has its own VM, its own `Http1`
+and its own ring (`server.cpp:353-520`). The boot ring became
+`BootQueue` (commit 52ff900). The connection table became
 `RLIMIT_NOFILE` (commits 5a8b1ec, 4f77226). The last two days of
-history are this change and its measurements, and the measurements
-are not finished: the rows in `bench/results/vm.log` for two threads
-read 448k, then 260k, then 172k responses per second across three
-commits of one afternoon, and two commit titles say the numbers were
-wrong.
+history are this change and its measurements. Two commit titles say
+that numbers were wrong. This plan makes no statement about those
+numbers.
 
-The edges of the change that are still open:
+The parts of the change that are not finished:
 
 - `RingConfig::rings_in_process` is written (`server.cpp:703`) and
   read nowhere.
 - `boot_queue_down` has no caller.
-- The commit that introduced `place_of_next_peer` replaced a hash of
-  the peer's pid or address (murmur3, commit de25166) with a turn per
-  thread (commit 8767d0e). `docs/reference/command-line.md:30` still
-  says the thread is the one "its address or its pid names", and the
-  test that commit names, `test/wm_spread.rb`, is not in the tree.
+- Commit 8767d0e replaced a hash of the peer's pid or address (murmur3,
+  commit de25166) with one turn per thread, `place_of_next_peer`.
+  `docs/reference/command-line.md:30` still says the thread is the
+  one "its address or its pid names". The test that commit de25166
+  names, `test/wm_spread.rb`, is not in the tree.
 - `bench/floor.sh:518` writes "(one ring, one thread)" on every
   harness row, with `threads=2` on the same row.
 - `docs/explanation/one-thread.md:9` says "one process and one
-  thread". CLAUDE.md names this exact sentence as the one a thread
-  flag makes false.
+  thread". CLAUDE.md names this sentence as the one a thread flag
+  makes false.
 - With `--threads=N` an application's `ready` hook runs N times and
   `conf.url` is written N times (Part 3.11).
 - The answering threads start with a spin on `ring_fd`.
-- TLS is a second open edge, older than the threads. The record
-  layer left with mruby-ktls and mruby-tls has not landed.
+- TLS is a second unfinished change, older than the threads. The
+  record layer left with mruby-ktls. mruby-tls is not in the tree.
   `listener_tls_refuse` (`server.cpp:244`) stops a server whose
   application asks for TLS. `AppSpec` still parses `cert_path`,
-  `key_path`, `named_pairs` and `tls`, the `kTls*` operation kinds
-  sit unused in `ring_setup.hpp:149`, and `docs/how-to/tls.md`
-  describes a setup the binary refuses.
+  `key_path`, `named_pairs` and `tls`. The `kTls*` operation kinds in
+  `ring_setup.hpp:149` are unused. `docs/how-to/tls.md` describes a
+  setup the binary refuses.
 
-These are facts about the tree, recorded so that no cleanup step
-mistakes one of them for its own bug. Neither the thread change nor
-the TLS edge is this plan's work (decision 8). The plan names only the
-dead code of both (Part 3.7) and the pages that no longer say what the
-binary does.
+These are facts about the tree. They are recorded so that no cleanup
+step mistakes one of them for its own bug. Neither the thread change
+nor the TLS change is this plan's work (decision 8). The plan names
+only the dead code of both (Part 3.7) and the pages that no longer
+say what the binary does.
 
 ## 4. The target, in the order of the RFCs
 
@@ -610,11 +610,11 @@ and 9111, `http1` for RFC 9112, `http2` for RFC 9113, `hpack` for RFC
 7541, `websocket` for RFC 6455, 7692 and 8441, `cookies` for RFC 6265,
 `problem_details` for RFC 9457, `sse` and `sniff` for the WHATWG
 standards, `webmachine` for the graph and the Resource. A file is
-named for what is in it. Inside a namespace the order of the
-declarations is the order of the RFC's sections, so a reader with the
-RFC open finds the code in the same place; the section number lives in
-the test names and the `static_assert` messages. The headings below
-keep the RFC number so this document can be read beside the RFC.
+named for what is in it. Inside a namespace the declarations follow
+the order of the RFC's sections. A reader with the RFC open finds the
+code in the same place. The section number is in the test names and
+the `static_assert` messages. The headings below keep the RFC number
+so that this document can be read beside the RFC.
 
 Every function below takes const arguments and returns its result.
 Every name below is a proposal for the skeleton commit (step 2). The
@@ -696,14 +696,14 @@ What moves here: `tok_eq`, `star_value`, `path_only`, `parse_method`,
 `gzip_acceptable`, `etag_list_match`, `parse_http_date`,
 `choose_media_type`, `accept_is_exact`, `etag_spell`, `uri_join`,
 `field_name_is_the_servers`, `field_name_ok`, `field_value_ok`,
-`join_repeated_fields`, `gzip::compress`, and from `resource.cpp` the
+`join_repeated_fields`, `gzip::compress`; from `resource.cpp` the
 media type parser and `run_append_allow`.
 
-What is thrown: everything in Part 3.3 that this namespace replaces,
-the SWAR word helpers (`std::string_view::find_first_of` is the same
-speed for this length; `bench/instructions.sh` confirms or refutes
-that in step 5), `ReqFacts`, `ReqValues`, `ReqView`,
-`kReqValueSpans`, `rebase`, `follow_copy`, `Held`.
+What goes: everything in Part 3.3 that this namespace replaces;
+`ReqFacts`, `ReqValues`, `ReqView`, `kReqValueSpans`, `rebase`,
+`follow_copy`, `Held`. The SWAR helpers (`word_has_zero_octet` and
+the others) stay until step 5 measures `std::string_view` against
+them under rule 11. The measurement decides.
 
 ### 4.2 `http`: RFC 9111, Caching
 
@@ -733,19 +733,19 @@ class Connection {
 }
 ```
 
-What moves here from `http1.cpp`, `http1_class.cpp`, `http1.hpp`:
-`feed_parse`'s head loop, `wire_header_read`,
+What moves here from `http1.cpp`, `http1_class.cpp` and `http1.hpp`:
+the head loop of `feed_parse`, `wire_header_read`,
 `transfer_encoding_fold`, `connection_field_holds_token`,
 `head_framing_status`, `WireFacts`, `take_body`, `take_chunked`,
-`BodySpill`, `head_spell`, `answer_assemble`, `assemble_dynamic`,
-`build_*` of the prebuilt store, `patch_date`, `Preface`,
+`BodySpill`, `head_spell`, `answer_assemble`, `assemble_dynamic`, the
+`build_*` functions of the prebuilt store, `patch_date`, `Preface`,
 `h1_preface`, `h1_upgrade_or_stream`.
 
-What does not belong to HTTP/1.1 and moves elsewhere: the docroot
-file transfer (`FileXfer`, `FileStep`, sixteen `file_*` methods),
-the asset answers, the coroutine suspend and resume, the compute and
-watcher bridges, the zero-copy plan, the error pages, sniffing. Each
-goes to its own class in Part 4.9.
+What does not belong to HTTP/1.1 moves elsewhere: the docroot file
+transfer (`FileXfer`, `FileStep`, sixteen `file_*` methods), the
+asset answers, the coroutine suspend and resume, the compute and
+watcher bridges, the send plan, the error pages, sniffing. Each goes
+to its own class in Part 4.9.
 
 ### 4.4 `http2` and `hpack`: RFC 9113 and RFC 7541
 
@@ -769,17 +769,18 @@ class Connection {
 ```
 
 HPACK encoding was written here for speed. Decision 5: it stays only
-where ls-hpack has nothing exactly as good. In step 6 each piece is
-measured against its ls-hpack form under rule 11: the static-table
-heads, the integer coding, the head cache. Equal or better means
-ls-hpack. What stays ours becomes one `hpack` namespace in the order
-of the RFC: 5.1 integer representation, 6.1 indexed field, 6.2 literal
-field with and without a name index, and the static table of Appendix
-A as `enum class StaticTable : uint8_t { authority = 1, method_GET =
-2, ... status_200 = 8, ... content_type = 31, ... }`, so a reader sees
-`encode_indexed(StaticTable::status_200)` where `0x88` stood. Decoding
-stays ls-hpack: a decoder must handle every input, and a decoder of
-our own is a second parser to fuzz.
+where ls-hpack has nothing as good. In step 6 each piece is measured
+against its ls-hpack form under rule 11. The pieces are the
+static-table heads, the integer coding and the head cache. Equal or
+better means ls-hpack. What stays ours becomes one `hpack` namespace
+in the order of the RFC: 5.1 integer representation, 6.1 indexed
+field, 6.2 literal field with and without a name index, and the
+static table of Appendix A as an enum. The enum is
+`enum class StaticTable : uint8_t { authority = 1, method_GET = 2,
+... status_200 = 8, ... content_type = 31, ... }`. A reader then sees
+`encode_indexed(StaticTable::status_200)` where `0x88` stood.
+Decoding stays ls-hpack. A decoder must handle every input, and a
+decoder of our own is a second parser to fuzz.
 
 What moves out: WebSocket over h2 (RFC 8441) to 4.5, SSE over h2 to
 4.7, the h1 paths in `spell_next_round` to 4.3.
@@ -796,12 +797,12 @@ size_t serialize_frame_header(FrameHeader h, std::span<unsigned char, 14> out);
 std::string unmask(std::string_view payload, std::array<unsigned char,4> key, size_t offset);
 enum class CloseCode : uint16_t { normal_closure = 1000, going_away = 1001, protocol_error = 1002, ... };
 struct Close { CloseCode code; std::string_view reason; };
-class Connection { ... 5.4 fragmentation, 5.5 control frames, 6 send/receive, 7 close ... };
+class Connection { ... };
 }
 namespace websocket::permessage_deflate {
 struct Parameters { bool server_no_context_takeover; bool client_no_context_takeover; uint8_t server_max_window_bits; uint8_t client_max_window_bits; };
 std::optional<Parameters> negotiate(std::string_view sec_websocket_extensions);
-class Codec { ... 7.2 };
+class Codec { ... };
 }
 ```
 
@@ -826,13 +827,15 @@ struct ProblemDetails { std::string type; uint16_t status; std::string title; st
 ```
 namespace sse {
 class EventStream { std::string event(std::string_view name, std::string_view data) const; std::string comment_line() const; ... };
-enum class SniffVerdict { agrees, contradicts, unknown };
-SniffVerdict sniff(std::string_view declared_media_type, std::string_view first_octets);
-constexpr size_t sniff_octets = 512;
+}
+namespace sniff {
+enum class Verdict { agrees, contradicts, unknown };
+Verdict sniff(std::string_view declared_media_type, std::string_view first_octets);
+constexpr size_t octets = 512;
 }
 ```
 
-### 4.8 `webmachine` (the decision graph and the Resource)
+### 4.8 `webmachine`: the decision graph and the Resource
 
 ```
 namespace webmachine {
@@ -854,7 +857,10 @@ http::Response handle_request(const Resource &r, const http::Request &q);
 }
 ```
 
-`RunState` (60 fields) is split three ways: what the decision loop
+The `clause` string of `kFlow` is read by nothing. It goes. Each
+clause becomes the name of that edge's case in `test/wm_flow.rb`.
+
+`RunState` (60 fields) splits three ways: what the decision loop
 carries (`DecisionState`), what the response holds
 (`http::Response`), and what is suspended (`SuspendedRequest`: the
 coroutine handle and its pending jobs). Nothing else of it survives.
@@ -867,7 +873,7 @@ with one job. The list follows the boot order.
 | class | job | comes from |
 |---|---|---|
 | `Invocation` | what the command line and the config file decided, merged once; absence stays visible | `config.cpp`, `ServerOptions`, `Config`, `AppSpec` settings, `Invocation` in `main.cpp` |
-| `boot(const Invocation &, mrb_state *) -> Server` | the one boot: load the app, build the router, open the pack, the docroot and the pages. The acceptor and every answering thread call the same function once. The `ready` hook runs once. | `server_run`, `server_build_ring_config`, `answer_thread_boot`, `app_inputs_build` |
+| `boot(const Invocation &, mrb_state *) -> Server` | the one boot: load the app, build the router, open the pack, the docroot and the pages. The acceptor and every answering thread call the same function once. The `ready` hook runs once | `server_run`, `server_build_ring_config`, `answer_thread_boot`, `app_inputs_build` |
 | `Application` | the routes of one app and its listener | `application.cpp`, `AppSpec` |
 | `Router` | one route table with a resource kind per route | three `RouteTable`s |
 | `Reactor` | the io_uring loop: submit, complete, dispatch | `Ring<App>` minus the eight below |
@@ -890,9 +896,9 @@ with one job. The list follows the boot order.
 
 ## 5. Decided
 
-These were open. They were decided in the session of 2026-09-19.
+These questions were open. They were decided on 2026-09-19.
 
-1. **The names of webmachine.** This tree is a port of webmachine, the
+1. **The names of webmachine.** This tree is a port of webmachine: the
    Erlang original and webmachine-ruby. Every name of webmachine-ruby's
    `Request` and `Response` stays: `method`, `uri`, `headers`, `body`,
    `routing_tokens`, `base_uri`, `disp_path`, `path_info`,
@@ -903,33 +909,32 @@ These were open. They were decided in the session of 2026-09-19.
    field accessors this tree added stay beside them. Nothing an
    application can see is removed. What the port lacks today
    (`routing_tokens`, `[]`, `https?`, `trace?`, `connect?`,
-   `response.trace`) is a gap of the port, named here and not filled by
-   this plan. `response.userdata` is this tree's own and stays until
-   its owner says otherwise.
+   `response.trace`) is a gap of the port. This plan names the gap and
+   does not fill it. `response.userdata` is this tree's own. It stays
+   until its owner says otherwise.
 2. **The precomputed plain-request status.** Stays, as a table
    `next_decision` fills at route time. Measured before and after.
-3. **picohttpparser.** Everything picohttpparser offers is used, and
-   anything this tree wrote again that picohttpparser has is deleted.
+3. **picohttpparser.** Everything picohttpparser offers is used.
+   Anything this tree wrote again that picohttpparser has is deleted.
    `phr_decode_chunked` stays. The private chunked grammar
    (`ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`, `chunk_tchar`,
    `chunk_hex`) goes. The same rule holds for every linked library
    (Part 3.3).
 4. **Namespaces by content, not by RFC number.** `http`, `http1`,
-   `http2`, `hpack`, `websocket`, `sse`, `cookies`, `problem_details`,
-   `webmachine`. The RFC section lives in test names and
-   `static_assert` messages. The order inside a namespace is the RFC's
-   section order.
+   `http2`, `hpack`, `websocket`, `sse`, `sniff`, `cookies`,
+   `problem_details`, `webmachine`. The RFC section is in test names
+   and `static_assert` messages. The order inside a namespace is the
+   RFC's section order.
 5. **HPACK.** The hand-built encoder stays only where ls-hpack has
-   nothing exactly as good. Each piece (the static-table heads, the
-   integer coding, the head cache) is measured under rule 11 against
-   the ls-hpack form. Equal or better means ls-hpack. Decoding is
-   ls-hpack already.
+   nothing as good. Each piece is measured under rule 11 against the
+   ls-hpack form: the static-table heads, the integer coding, the head
+   cache. Equal or better means ls-hpack. Decoding is ls-hpack already.
 6. **The callback names of webmachine.** They stay. Same reason as 1.
 7. **The threshold that was called `zero_copy_threshold`.** The name
    says what happens and why. What happens: above N bytes the server
    sends the body from the Ruby string's own memory instead of copying
    it into the send buffer. Why: the copy is the cost it avoids, in cpu
-   per send and in memory per slow reader; the old comment measured 300
+   per send and in memory per slow reader. The old comment recorded 300
    stalled readers of a 64 KB answer holding 19.5 MB of duplicates. The
    name is `send_body_without_copy_above`: the flag
    `--send-body-without-copy-above=N`, the TOML key and the `conf.*`
@@ -950,7 +955,7 @@ instruction count (`bench/instructions.sh`) runs at the end of each
 step and is compared to step 0. A step that raises it by more than
 one percent is discussed before merge.
 
-Rule 10 makes every step a loop, and the loop is the same each time:
+Rule 10 makes every step a loop. The loop is the same each time:
 
 1. Write the change.
 2. `tools/syntax-check.sh` on the touched files, then
@@ -960,27 +965,32 @@ Rule 10 makes every step a loop, and the loop is the same each time:
    Autobahn).
 5. The sanitizer builds (`build_config_asan.rb`, `build_config_tsan.rb`)
    when the reactor, the pool or a buffer changed.
-6. `tools/fuzz.sh` for one hour when a parser changed: the head
-   parser, the chunked decoder, the h2 frame parser, the websocket
-   frame parser, the Accept parser, the date parser, the cookie parser.
-   A finding is a test first, then a fix.
+6. `tools/fuzz.sh` for one hour when a parser changed. The parsers
+   are the head parser, the chunked decoder, the h2 frame parser, the
+   websocket frame parser, the Accept parser, the date parser and the
+   cookie parser. A finding becomes a test first, then a fix.
 7. `bench/instructions.sh` against step 0.
-8. Read the diff once more with rule 2 and rule 4: does each
-   declaration say what happens, does anything hide.
+8. Read the diff once more with rule 2 and rule 4. Does each
+   declaration say what happens? Does anything hide?
 9. When 3 to 8 moved something the wrong way, adjust and go to 2.
    When a full round changes nothing, the step is done.
 
 The rounds are counted in the pull request text, with what each one
 moved.
 
-This container has no liburing and no mruby checkout, so the checks
-run in CI or on the author's machine, not here.
+This container built the host config with `rake compile`. `rake test`
+builds the debug config itself, and every test is the debug build's.
+The conformance runs and the bench scripts need htgen, h2spec and
+Autobahn, which this container does not have. Those run in CI or on
+the author's machine.
 
 ### Step 0: the baseline
 
 - Nothing in the tree changes. The thread change of Part 3.12 is not
-  this plan's (decision 8); the baseline is taken on the tree as it
+  this plan's (decision 8). The baseline is taken on the tree as it
   is, at its own `--threads` default.
+- Every script under `bench/` and every page under `docs/` is read,
+  as CLAUDE.md asks, before the first measurement.
 - `rake test` green on the base commit.
 - `bench/instructions.sh` for the h1 floor, the h2 floor and one
   asset. The three counts go to `bench/results/` with the commit hash.
@@ -992,34 +1002,34 @@ run in CI or on the author's machine, not here.
 - Delete everything in Part 3.7.
 - Delete the name form of `tools/rename-symbol.py`. The position form
   stays. `rename-batch.py` gets a check that its input is sorted
-  bottom-up per file and refuses otherwise.
-- Name `mruby-c-ext-helpers` in `mrbgem.rake`. It is already built
-  through other gems; naming it says that this tree calls it.
-- Fix `webmachine-logd`'s privacy levels to what the documentation
-  says (Part 3.11), and add the bintest. The `server.cpp:622` warning
-  moves to `full`. This is the one behaviour change in step 1, and it
-  is a fix.
+  bottom-up per file. It refuses otherwise.
+- Name `mruby-c-ext-helpers` in `mrbgem.rake`. It is built through
+  other gems already. Naming it says that this tree calls it.
+- Fix the privacy levels of `webmachine-logd` to what the
+  documentation says (Part 3.11), and add the bintest. The
+  `server.cpp:622` warning moves to `full`. This is the one behaviour
+  change in step 1, and it is a fix.
 - Fix every declaration whose parameter name differs from its
-  definition by copying the definition's name into the declaration.
-  This is a text change with no semantic risk and it removes about a
+  definition. The definition's name is copied into the declaration.
+  This is a text change with no semantic risk. It removes about a
   third of Part 3.1.
-- Check: build, suite, smoke. Count of Part 2 unchanged except the
-  dead lines.
+- Check: build, suite, smoke. The counts of Part 2 are unchanged
+  except for the dead lines.
 
 ### Step 2: the skeleton
 
-- Write the headers of Part 4 as declarations only, under the RFC
-  namespaces, in RFC order, with const arguments and return types.
-  No bodies. No comments. Each declaration has a one-line
-  `static_assert` or test name beside it where an RFC clause used to
-  be a comment.
+- Write the headers of Part 4 as declarations only: namespaces by
+  content, RFC section order inside, const arguments, return types.
+  No bodies. No comments. Where an RFC clause used to be a comment, a
+  one-line `static_assert` or a test name stands beside the
+  declaration.
 - Every name in the skeleton is checked against Part 1.1: a verb from
-  the table, no house word, no metaphor.
-- Each row of Part 3.9 becomes one declaration whose arguments are
-  the inputs the RFC names and whose state, where the RFC names one,
-  is a value in and a value out. The row's right column is written
-  into the pull request text beside the declaration, so the review
-  sees what the one method will collect.
+  the table, no made-up word, no metaphor.
+- Each row of Part 3.9 becomes one declaration. Its arguments are the
+  inputs the RFC names. Its state, where the RFC names one, is a value
+  in and a value out. The row's right column goes into the pull
+  request text beside the declaration, so that the review sees what
+  the one method will collect.
 - Nothing is called yet. The tree builds as before.
 - This step is the review point. The user reads the headers and says
   what is missing and what is too much.
@@ -1027,12 +1037,12 @@ run in CI or on the author's machine, not here.
 ### Step 3: one decision loop
 
 - `flow::walk` in `webmachine.hpp` becomes `next_decision`, the one
-  pure step over the graph, and `handle_request` the one loop that
-  drives it. `run_engine`'s special cases become the callbacks of the
-  nodes they special-case. `flow::answer`, `walk_compiled`,
-  `lands_on`, `reaches_a_node_that_reads_the_request` and
-  `block_skips_are_the_graphs` go. `shortcut_for` becomes the table
-  fill of decision 2.
+  pure step over the graph. `handle_request` becomes the one loop
+  that drives it. The special cases of `run_engine` become the
+  callbacks of the nodes they special-case. `flow::answer`,
+  `walk_compiled`, `lands_on`, `reaches_a_node_that_reads_the_request`
+  and `block_skips_are_the_graphs` go. `shortcut_for` becomes the
+  table fill of decision 2.
 - `next_decision(resource, request, state) -> Decision` is pure. The
   decision names the next callback to call or the status to answer.
   `handle_request` calls Ruby and calls `next_decision` again with the
@@ -1043,15 +1053,15 @@ run in CI or on the author's machine, not here.
 
 ### Step 4: one Request, one Response
 
-- `ReqFacts`, `ReqValues`, `ReqView` become `http::Request`, with
+- `ReqFacts`, `ReqValues` and `ReqView` become `http::Request`, with
   offsets into the head buffer. `Held`, `rebase`, `follow_copy` and
   `kReqValueSpans` go.
-- `RunState` splits into `WalkState`, `http::Response` and
-  `SuspendedWalk`.
+- `RunState` splits into `DecisionState`, `http::Response` and
+  `SuspendedRequest`.
 - The Ruby accessors keep their names, in this step and after
   (decision 1).
 - `request_bind` and `response_bind` go. The Ruby `request` and
-  `response` objects hold their request as a value, and each accessor
+  `response` objects hold their request as a value. Each accessor
   reads `self`. `disp_override_` and `body_io_` go with them.
 - Check: suite, smoke, count.
 
@@ -1059,26 +1069,27 @@ run in CI or on the author's machine, not here.
 
 - Each function of Part 4.1, 4.2 and 4.6 moves under its namespace,
   in RFC order, with const arguments and a return value. Its comments
-  are deleted as it moves; each fact goes to its destination of Part
+  are deleted as it moves. Each fact goes to its destination of Part
   3.6 in the same commit.
 - The second copies of Part 3.3 that these namespaces replace are
   deleted in the same step.
-- The SWAR helpers are replaced by `std::string_view::find_first_of`
-  and the count is read. If the count rises, the SWAR comes back as
-  one function with a test, not a comment.
+- The SWAR helpers are measured against `std::string_view::find_first_of`
+  under rule 11. The count decides which one stays. What stays is one
+  function with a test.
 - Check: suite, smoke, count, and `grep -c '^\s*//'` on every moved
   file reads 0.
 
 ### Step 6: the connections
 
 - `http1::Connection` from the h1 parts of `http1*.cpp`.
-- `http2::Connection` from `http2.cpp` and `h2_wire.*`.
-  `hpack` takes the encoder: each piece measured against ls-hpack under
-  rule 11, and ls-hpack wins a tie (decision 5).
-- `websocket::Connection` and `websocket::permessage_deflate::Codec` from `http1_wire.cpp`,
-  `websocket.cpp`, `wsconn.cpp` and the ws parts of `http2.cpp`.
+- `http2::Connection` from `http2.cpp` and `h2_wire.*`. `hpack` takes
+  the encoder. Each piece is measured against ls-hpack under rule 11.
+  ls-hpack is kept when the two are equal (decision 5).
+- `websocket::Connection` and `websocket::permessage_deflate::Codec`
+  from `http1_wire.cpp`, `websocket.cpp`, `wsconn.cpp` and the ws
+  parts of `http2.cpp`.
 - `sse::EventStream` from `sse.cpp` and the sse parts of both.
-- `Http1` (the class) is gone at the end of this step.
+- The class `Http1` is gone at the end of this step.
 - Check: suite, `tools/conformance.sh` (h2spec, Autobahn), smoke,
   count.
 
@@ -1086,24 +1097,24 @@ run in CI or on the author's machine, not here.
 
 - `Ring<App>` splits into the nine classes of Part 4.9. The App
   contact surface becomes one declared interface: the list of
-  `App::*` calls `ring.hpp` makes today, which is about forty.
+  `App::*` calls `ring.hpp` makes today. There are about forty.
 - The four scope guards become one. `Conn` in `ring.hpp` splits along
-  the groups already visible in it.
+  the groups that are visible in it already.
 - The file-scope state of `server.cpp`, `docroot.cpp`,
   `compute_task.cpp`, `resource.cpp` and `passwd.cpp` (Part 3.8)
   becomes one `Server` value built in `main` and one `Worker` value
   built per worker thread. Every function that read a global takes
   the value it needs as an argument.
-- `boot` is one function, called by the acceptor and by each
-  answering thread. `answer_thread_boot` goes. The spin on `ring_fd`
-  becomes the condition variable the pool already uses.
+- `boot` is one function. The acceptor and each answering thread call
+  it. `answer_thread_boot` goes. The spin on `ring_fd` becomes the
+  condition variable the pool uses already.
 - Check: suite, `bintest/threads.rb`, `bintest/watcher.rb`,
   `bintest/zerocopy.rb`, smoke, count, and the sanitizer jobs.
 
 ### Step 8: the Resource and the Ruby surface
 
-- The six parallel arrays and sixteen `ValueCb` fields become the two
-  `Callback` arrays. `cb_mask` is derived, not stored.
+- The six parallel arrays and the sixteen `ValueCb` fields become the
+  two `Callback` arrays. `cb_mask` is derived, not stored.
 - Every webmachine-ruby name stays (decision 1). The duplicates are
   defined once each, in `mrblib/`, over the RFC accessors.
   `docs/reference/request-and-response.md` lists the gaps of the port.
@@ -1116,20 +1127,20 @@ run in CI or on the author's machine, not here.
 
 - Every remaining comment in the tree goes, the Rakefile and the build
   configs included. The Rakefile's regex over `reason()` and `kFaces`
-  (used by `rake error_assets`) is replaced by a generated table, so
-  no Ruby reads C++ source text.
+  (used by `rake error_assets`) is replaced by a generated table. No
+  Ruby reads C++ source text after that.
 - A CI gate: `grep -rE '^\s*(//|/\*)' src test bintest tools mrblib`
   must print nothing. Over the Ruby files, the Rakefile and the build
   configs, `grep -rE '^\s*#' | grep -v '^#!'` must print nothing. The
   gate runs in the suite job.
 - `clang-format --dry-run --Werror` over `src/`, `test/`, `tools/` and
   `bench/` joins the suite job as a gate, beside the comment gate.
-  Every step from step 1 on formats the files it touched (rule 12), so
-  this last sweep changes nothing and only proves it.
+  Every step from step 1 on formats the files it touched (rule 12).
+  This last sweep changes nothing and only proves it.
 - The 25 pages under `docs/` are read once more against the new
   names. `docs/explanation/reactor.md` and
-  `docs/explanation/numbers-that-were-measured.md` are added.
-  CLAUDE.md's `Held::Span` paragraph is kept as history.
+  `docs/explanation/numbers-that-were-measured.md` are added. The
+  `Held::Span` paragraph of CLAUDE.md is kept as history.
 - Check: the whole of Part 2, measured again, in the pull request
   text.
 
@@ -1143,3 +1154,4 @@ run in CI or on the author's machine, not here.
 - No step reformats a file it did not otherwise change. A file it did
   change is formatted whole, once, in the same commit.
 - No step carries a session URL, a model name or a comment.
+- No step states a number about speed that `bench/` did not produce.
