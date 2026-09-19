@@ -79,6 +79,20 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
     number is not merged. "Larger" means: the decision loop, a parser, a
     connection class, the reactor, HPACK, the send path, the body
     path, or anything a bench script names.
+12. **Everything is written the way Kernighan and Ritchie wrote.** That
+    is two things. The layout: a function's opening brace on its own
+    line, every other brace on the line that opens its block, a space
+    after a keyword, the star on the name. `.clang-format` in this tree
+    already states it (`BreakBeforeBraces: Linux`), and the C++ Core
+    Guidelines name it as NL.17. The discipline: a function does one
+    thing and fits on one screen; a name is short where its scope is
+    short (`i`, `n`, `p`) and says its purpose where its scope is long;
+    the plain construct is chosen over the clever one; a loop is a
+    loop and not a template; the interface is a few functions over a
+    few types, each one small enough to hold in the head. Nothing is
+    written for a reader who is not there. `clang-format` runs on every
+    changed file before every commit, and the suite job checks that it
+    changes nothing.
 
 ### 1.1 Where a name comes from
 
@@ -920,7 +934,8 @@ one percent is discussed before merge.
 Rule 10 makes every step a loop, and the loop is the same each time:
 
 1. Write the change.
-2. `tools/syntax-check.sh` on the touched files.
+2. `tools/syntax-check.sh` on the touched files, then
+   `clang-format -i` on them.
 3. `rake test`. Nothing may fail.
 4. `tools/conformance.sh` when a connection class changed (h2spec,
    Autobahn).
@@ -1093,8 +1108,10 @@ run in CI or on the author's machine, not here.
   must print nothing. Over the Ruby files, the Rakefile and the build
   configs, `grep -rE '^\s*#' | grep -v '^#!'` must print nothing. The
   gate runs in the suite job.
-- `clang-format` over `src/` once, after the last move, so no earlier
-  diff is a reformat.
+- `clang-format --dry-run --Werror` over `src/`, `test/`, `tools/` and
+  `bench/` joins the suite job as a gate, beside the comment gate.
+  Every step from step 1 on formats the files it touched (rule 12), so
+  this last sweep changes nothing and only proves it.
 - The 25 pages under `docs/` are read once more against the new
   names. `docs/explanation/reactor.md` and
   `docs/explanation/numbers-that-were-measured.md` are added.
@@ -1110,5 +1127,6 @@ run in CI or on the author's machine, not here.
   the old test was wrong.
 - No step renames by text. A rename is clangd's position form,
   bottom-up, and the diff is read after.
-- No step reformats a file it did not otherwise change.
+- No step reformats a file it did not otherwise change. A file it did
+  change is formatted whole, once, in the same commit.
 - No step carries a session URL, a model name or a comment.
