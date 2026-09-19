@@ -25,6 +25,14 @@ struct Request {
     Fields trailer_section;
 };
 
+struct Uri {
+    std::string_view scheme;
+    std::string_view host;
+    unsigned port;
+    std::string_view path;
+    std::string_view query;
+};
+
 struct Response {
     unsigned status;
     Fields header_section;
