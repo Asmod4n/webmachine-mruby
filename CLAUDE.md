@@ -335,3 +335,20 @@ of the flow table: `to(Node::kG9)` became `ComputeJobAsk:kG9)`. The
 compiler would have caught that one, but a rename that stays
 type-correct would go through. So: rename with the tool, then read what
 it changed, then build.
+
+## Code is shown before it is written
+
+A session shows every function that has behaviour or introduces a
+name before it writes the function to disk: the declaration and the
+body as they will stand in the tree, with the RFC section beside
+them. One function per message, 40 lines at most. The owner answers
+yes, change, or no. A repeated form is shown once in full; after the
+yes, only the list of names follows.
+
+Mechanical changes are not shown one by one: deleting from an agreed
+list, copying a parameter name from a definition into its
+declaration, `clang-format`. They are summarised before the commit,
+with the files and the line counts, and the diff on request.
+
+After the yes, the session writes, runs `tools/syntax-check.sh` and
+the tests, and reports only what is red. Green is one line.
