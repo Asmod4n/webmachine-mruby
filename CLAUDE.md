@@ -370,3 +370,87 @@ the test does is in the test.
 A string that reaches a log, an error page or a client is not a
 comment. `"RFC 9110 5.6.4"` inside a ParseError is what the operator
 reads at three in the morning. It stays.
+
+## How the code is written
+
+These rules came from `cleanup-plan.md`, which is gone. Where two
+rules meet, the stricter one holds.
+
+1. **A declaration says what happens.** The function name says what
+   the function does. Each parameter name says what is passed. The
+   return type says what comes back. A reader of the header alone
+   knows the behaviour.
+2. **A name that a specification gives is the name the code uses.**
+   A field, a method, a status, a frame, an opcode, a close code, an
+   ABNF rule: the word of the RFC, without translation. `tchar`,
+   `token`, `OWS`, `quoted-string`, `field-name`, `representation`,
+   `origin`. A word that reads better but appears in no specification
+   is not chosen over it. The order of a class follows the order of
+   the RFC that defines it, section by section. Where C++ names the
+   thing instead, C++ wins for the same reason: `what()` stays
+   `what()`. Where nothing names it, the name says its purpose, as
+   the Google C++ Style Guide states.
+3. **No method hides anything.** No function wraps one library call.
+   No function changes an argument unless its name says so. No
+   function raises unless its name says so. No function does two
+   things.
+4. **Every argument is const.** A function reads its inputs and
+   returns its result. There is no `out_value`, no `&sink` and no
+   pointer that is written through. The return type is what the
+   function makes. A function that changes an object is a method of
+   that object.
+5. **Use what a linked library has.** `std::`, mruby, liburing,
+   ls-hpack, zlib, miniz, picohttpparser, simdutf and ada are in the
+   build. Nothing they answer is written here a second time. Read the
+   library first, and read it in its own source: picohttpparser takes
+   the whitespace off a field value and this tree does not need to;
+   picohttpparser takes BWS after a chunk size, a bare LF and an
+   unchecked chunk extension, and every one of those three has a
+   vulnerability against its name, so the grammar check in front of
+   it stays.
+6. **One Resource takes one Request and gives one Response.** There is
+   one Request type and one Response type. Every field of either has
+   the name the RFC gives it. `Http` holds the semantics of RFC 9110
+   and RFC 9111. `Http1`, `Http2` and a later `Http3` turn those
+   values into bytes and back, and add nothing. The decision graph
+   cannot see which version carried a request.
+7. **An RFC that describes a procedure gives one method.** Where an
+   RFC states steps, inputs and state for one thing, this tree has one
+   function for it. Its arguments are the inputs the RFC names. Its
+   state is the state the RFC names, passed in as a value.
+8. **Every function could run in a functional language as it is.** A
+   function takes values and returns a value. It reads no global. It
+   writes no global. It keeps no static. State that changes is a value
+   that goes in and a new value that comes out. An effect happens in
+   one place, after a pure function decided it. An effect is a
+   syscall, a ring submission or a Ruby call. "Decide, then do" is
+   this rule.
+9. **The code is made as fast, as hard to attack and as plain as
+   possible, by repeated testing and adjusting.** No step is done when
+   it compiles. A step is done when the suite, the conformance runs,
+   the sanitizers, the fuzzer and the instruction count have each run
+   and none of them moved the wrong way. The loop ends when a round
+   changes nothing.
+10. **Every larger change is measured before and after.** The arms
+    alternate, A B A B A B, five runs each, and the medians are
+    compared, as `bench/how-to-measure.md` says. A change too small
+    for the clock is measured with `bench/instructions.sh`. Measure
+    the noise floor of the machine first: ten runs of `sysbench cpu`
+    say how small a difference the clock can still read there.
+11. **A comparison that AVX2 and NEON can help is measured, and the
+    code is written so that both compilers vectorize it.** Scalar in
+    `std::` terms first. Then count both arms with the same
+    `WM_MARCH=`. An intrinsic enters the tree only where the count
+    says the compilers cannot reach the speed, and then for both
+    architectures at once, with the scalar form as the third branch.
+    A loop with a fixed count over a contiguous buffer, with no early
+    exit and no branch in the body, is the form both compilers take.
+12. **Kernighan and Ritchie.** The layout `.clang-format` already
+    states (`BreakBeforeBraces: Linux`). And the discipline: a
+    function does one thing and fits on one screen. A name is short
+    where its scope is short. The plain construct over the clever one.
+    A loop is a loop and not a template.
+13. **Asserts live in tests.** No `assert` and no `static_assert` in
+    `src/`. A `constexpr` function is tested by `static_assert` in
+    `test/`, which mruby compiles into `mrbtest` alone, so the test
+    runs at compile time and costs nothing at run time.
