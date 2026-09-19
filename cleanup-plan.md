@@ -76,7 +76,7 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
     says. Both numbers go into the pull request text with the row
     from `bench/results/`. A change too small for the clock is
     measured with `bench/instructions.sh`. A change with no before
-    number is not merged. "Larger" means: a walker, a parser, a
+    number is not merged. "Larger" means: the decision loop, a parser, a
     connection class, the reactor, HPACK, the send path, the body
     path, or anything a bench script names.
 
@@ -295,7 +295,7 @@ gets the plain word.
 | `kFaces`, `status_title`, `status_source` | `reason(status)` |
 | `access_log_method_name`, `kMethodName[]`, the switch in `request.cpp:77` | one method name table |
 | `chunk_tchar` and `is_tchar`; OWS tested five ways | one `tchar` and one `ows` predicate |
-| the private chunked-body walk (`ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`) beside `phr_decode_chunked` | one decoder (open decision 3, Part 5) |
+| the private chunked-body decoder (`ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`) beside `phr_decode_chunked` | one decoder (open decision 3, Part 5) |
 | `base64_encode_digest` | `simdutf::binary_to_base64` |
 | `utf8_prefix_may_still_be_valid` | simdutf's `TOO_SHORT` count |
 | `handler_call_with_no_args` and `handler_call_in_protected_call` | one trampoline with an argc |
@@ -893,11 +893,11 @@ answer is first.
    one-line Ruby methods in `mrblib/`, defined once, on top of the RFC
    names.
 2. **The precomputed plain-request status.** Recommended: keep it as
-   a table the one walker fills at route time. The measured gain of
+   a table `next_decision` fills at route time. The measured gain of
    the constant tier lives there. Alternative: drop it and read the
    loss in `bench/instructions.sh`.
 3. **Two chunked decoders.** Recommended: run the bintests that made
-   the strict walk exist against `phr_decode_chunked` alone. If one
+   the strict decoder exist against `phr_decode_chunked` alone. If one
    fails, ours stays and the call into picohttpparser goes. If none
    fails, ours goes. One decoder either way.
 4. **Namespaces named by RFC.** Recommended: yes. It is the one place
@@ -927,8 +927,8 @@ Rule 10 makes every step a loop, and the loop is the same each time:
 5. The sanitizer builds (`build_config_asan.rb`, `build_config_tsan.rb`)
    when the reactor, the pool or a buffer changed.
 6. `tools/fuzz.sh` for one hour when a parser changed: the head
-   parser, the chunked decoder, the h2 frame walk, the websocket
-   frame walk, the Accept parser, the date parser, the cookie parser.
+   parser, the chunked decoder, the h2 frame parser, the websocket
+   frame parser, the Accept parser, the date parser, the cookie parser.
    A finding is a test first, then a fix.
 7. `bench/instructions.sh` against step 0.
 8. Read the diff once more with rule 2 and rule 4: does each
