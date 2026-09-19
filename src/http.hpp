@@ -25,6 +25,13 @@ struct Request {
     Fields trailer_section;
 };
 
+struct Response {
+    unsigned status;
+    Fields header_section;
+    std::span<const std::byte> content;
+    Fields trailer_section;
+};
+
 struct Representation {
     std::string_view media_type;
     std::string_view content_coding;
