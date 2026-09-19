@@ -454,3 +454,37 @@ rules meet, the stricter one holds.
     `src/`. A `constexpr` function is tested by `static_assert` in
     `test/`, which mruby compiles into `mrbtest` alone, so the test
     runs at compile time and costs nothing at run time.
+
+## A catch names its type
+
+There are two zones, and they do not share a mechanism.
+
+**Inside a VM, or at its edge.** `MRB_USE_CXX_EXCEPTION` makes mruby
+throw an `mrb_jmpbuf *`, a raw pointer with no base class. A
+`catch (...)` therefore catches a running raise and destroys it, and
+`catch (const std::exception &)` does not catch it at all. So no C++
+catch stands at that edge. `mrb_protect_error` does, as
+`mruby/throw.h` itself says and as the error rules above already
+state. It catches both kinds and gives back a value.
+
+**Outside any VM.** Boot, the configuration, the ring, files, the body
+of a thread that runs no Ruby: real C++ exceptions. A catch names the
+exact type it can recover from. `std::system_error` where `EAGAIN`
+means something other than `ENOSPC`. Nothing else is caught, so our
+own faults reach the top and end the process.
+
+Our thrown types hook into the standard hierarchy and add nothing the
+standard already carries: `std::system_error` for a syscall, with the
+errno in its `error_code`; `std::logic_error` and its children for a
+fault of ours; `std::runtime_error` and its children for a condition
+of the world, such as a configuration this operator wrote.
+
+Two places catch broadly, because the alternative is a death with no
+words: `main`, and the body of a thread we start, where an escaped
+exception is `std::terminate` for every thread. Both print or record
+the failure and then die or hand it back as a value. Neither
+continues.
+
+A client that sends something invalid is not an exception at all. It
+is the normal work of a server, it is a value, and it travels in
+`std::expected`.
