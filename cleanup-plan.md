@@ -98,6 +98,28 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
     who is not there. `clang-format` runs on every changed file before
     every commit. The suite job checks that it changes nothing.
 
+13. **A comparison that AVX2 and NEON can help is measured, and the
+    code is written so that both compilers vectorize it.** Two tests,
+    and a comparison passes both or it stays scalar. First: is the
+    vector form really faster? `bench/instructions.sh` counts both
+    arms with the same `WM_MARCH=`, and the count decides. A compiler
+    makes the same instructions from two `uint64_t` comparisons as a
+    person makes from an intrinsic, and then the intrinsic is only
+    more code. Second: do `clang` and `gcc` vectorize the scalar form
+    on x86-64 and on aarch64? `-fopt-info-vec` from gcc and
+    `-Rpass=loop-vectorize` from clang answer it. A loop with a fixed
+    count over a contiguous buffer, with no early exit and no branch
+    in the body, is the form both compilers take. That form is
+    written first. An intrinsic is written only where the two tests
+    say the compilers cannot reach the speed, and then it is written
+    for both architectures at once, with the scalar form as the third
+    branch.
+
+    AVX2 and NEON are the floor of what the code may use. The debug
+    build cannot reach it today: `build_config_debug.rb` puts
+    `-mavx2` on every compile, which no aarch64 compiler accepts.
+    `host` and `pgo` are correct through `-march`.
+
 ### 1.1 Where a name comes from
 
 A name in this tree is a word a reader knows from the HTTP code of a
