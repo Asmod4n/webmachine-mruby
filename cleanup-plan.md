@@ -625,75 +625,67 @@ skeleton is reviewed before code moves under it.
 ```
 namespace http {
 
-// 5 Fields
 struct FieldLine { std::string_view name; std::string_view value; };
-class Fields {                      // ordered list of FieldLine
-  std::optional<std::string_view> first(std::string_view name) const;   // 5.2
-  std::string combined(std::string_view name) const;                    // 5.2, comma list
-  std::vector<std::string_view> all(std::string_view name) const;       // 5.3
+class Fields {
+  std::optional<std::string_view> first(std::string_view name) const;
+  std::string combined(std::string_view name) const;
+  std::vector<std::string_view> all(std::string_view name) const;
   Fields with(FieldLine line) const;
   Fields without(std::string_view name) const;
 };
-bool field_name_is_token(std::string_view name);                       // 5.1, 5.6.2
-bool field_value_has_no_cr_lf_nul(std::string_view value);             // 5.5
-bool token_equals_ignoring_case(std::string_view a, std::string_view b); // 5.1 (was tok_eq)
-std::optional<std::chrono::sys_seconds> parse_http_date(std::string_view text); // 5.6.7
-std::string format_imf_fixdate(std::chrono::sys_seconds at);           // 5.6.7
+bool field_name_is_token(std::string_view name);
+bool field_value_has_no_cr_lf_nul(std::string_view value);
+bool token_equals_ignoring_case(std::string_view a, std::string_view b);
+std::optional<std::chrono::sys_seconds> parse_http_date(std::string_view text);
+std::string format_imf_fixdate(std::chrono::sys_seconds at);
 
-// 6 Message abstraction
-enum class Method { GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, other }; // 9
-struct Request {                    // 6.2 control data, 6.3 fields, 6.4 content
+enum class Method { GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, other };
+struct Request {
   Method method;
   std::string_view method_token;
-  std::string_view target;          // RFC 9112 3.2 / RFC 9113 8.3.1
-  std::string_view path;            // RFC 3986 3.3
-  std::string_view query;           // RFC 3986 3.4
+  std::string_view target;
+  std::string_view path;
+  std::string_view query;
   Fields fields;
-  Content content;                  // bytes in memory or a file descriptor, and the declared length (8.6)
+  Content content;
   bool tls;
-  // 7.2
+
   std::string_view host() const;
-  // 10.1, 11.6.2, 12.5, 13.1, 14.2: one accessor per field the server reads, named as the field
+
   std::optional<std::string_view> authorization() const;
   std::optional<std::string_view> accept() const;
   ...
 };
-struct Response {                   // 6.2 status, 6.3 fields, 6.4 content
+struct Response {
   uint16_t status;
   Fields fields;
-  Body body;                        // owned bytes, a lent Ruby string, a file, or an asset
+  Body body;
 };
 
-// 8 Representation data and metadata
-std::string content_type_with_charset(std::string_view media_type);    // 8.3.2
-bool media_type_is_compressible(std::string_view media_type);          // 8.4.1.3 + RFC 6839
-std::optional<std::string> gzip(std::string_view bytes);               // 8.4.1.3
-std::optional<size_t> parse_content_length(std::string_view value);    // 8.6
+std::string content_type_with_charset(std::string_view media_type);
+bool media_type_is_compressible(std::string_view media_type);
+std::optional<std::string> gzip(std::string_view bytes);
+std::optional<size_t> parse_content_length(std::string_view value);
 enum class Validator { strong, weak };
-bool entity_tag_matches(std::string_view tag, std::string_view list, Validator how); // 8.8.3.2
-std::string quote_entity_tag(std::string_view raw);                    // 8.8.3
+bool entity_tag_matches(std::string_view tag, std::string_view list, Validator how);
+std::string quote_entity_tag(std::string_view raw);
 
-// 10 Message context
-std::string allow_field_value(std::span<const Method> allowed);        // 10.2.1
-std::string resolve_location(std::string_view base, std::string_view reference); // 10.2.2 + RFC 3986 5.3
+std::string allow_field_value(std::span<const Method> allowed);
+std::string resolve_location(std::string_view base, std::string_view reference);
 
-// 12 Content negotiation
-std::optional<size_t> choose_media_type(std::span<const std::string> offered, std::string_view accept); // 12.5.1
-bool gzip_is_acceptable(std::string_view accept_encoding);             // 12.5.3
-std::string vary_field_value(...);                                     // 12.5.5
+std::optional<size_t> choose_media_type(std::span<const std::string> offered, std::string_view accept);
+bool gzip_is_acceptable(std::string_view accept_encoding);
+std::string vary_field_value(...);
 
-// 13 Conditional requests
-struct Preconditions { ... the five fields, parsed };                   // 13.1
-std::optional<uint16_t> evaluate_preconditions(const Preconditions &p, const Validators &v, Method m); // 13.2
+struct Preconditions { ... the five fields, parsed };
+std::optional<uint16_t> evaluate_preconditions(const Preconditions &p, const Validators &v, Method m);
 
-// 14 Range requests
 struct ByteRange { size_t first; size_t last; };
 enum class RangeResult { none, one, unsatisfiable };
-std::pair<RangeResult, ByteRange> parse_byte_range(std::string_view range, size_t complete_length); // 14.1.2
-bool if_range_matches(std::string_view if_range, std::string_view etag); // 13.1.5
+std::pair<RangeResult, ByteRange> parse_byte_range(std::string_view range, size_t complete_length);
+bool if_range_matches(std::string_view if_range, std::string_view etag);
 
-// 15 Status codes
-std::string_view reason_phrase(uint16_t status);                       // 15
+std::string_view reason_phrase(uint16_t status);
 }
 ```
 
@@ -717,9 +709,9 @@ that in step 5), `ReqFacts`, `ReqValues`, `ReqView`,
 
 ```
 namespace http {
-bool freshness_is_stated(const http::Fields &response_fields);     // 4.2.1, 5.2, 5.3
-constexpr std::string_view no_cache_directive = "no-cache";            // 5.2.2.4
-bool target_names_a_directory(std::string_view target);                // 4.2.2, heuristic freshness
+bool freshness_is_stated(const http::Fields &response_fields);
+constexpr std::string_view no_cache_directive = "no-cache";
+bool target_names_a_directory(std::string_view target);
 }
 ```
 
@@ -728,16 +720,15 @@ bool target_names_a_directory(std::string_view target);                // 4.2.2,
 ```
 namespace http1 {
 class Connection {
-  // 2 Message, 3 Request line, 5 Field syntax
-  ParseResult parse_head(std::string_view bytes) const;                // through picohttpparser
-  // 6 Message body
-  BodyLength body_length(const http::Request &r) const;             // 6.3
-  // 7.1 Chunked transfer coding
+
+  ParseResult parse_head(std::string_view bytes) const;
+
+  BodyLength body_length(const http::Request &r) const;
+
   ChunkedResult decode_chunked(std::string_view bytes) const;
-  // 8 Incomplete messages
-  // 9 Connection management
-  bool persists(const http::Request &r) const;                      // 9.3
-  std::string serialize(const http::Response &r, Persistence p) const; // 2.1 status line + fields
+
+  bool persists(const http::Request &r) const;
+  std::string serialize(const http::Response &r, Persistence p) const;
 };
 }
 ```
@@ -760,20 +751,18 @@ goes to its own class in Part 4.9.
 
 ```
 namespace http2 {
-enum class FrameType : uint8_t { DATA = 0x0, HEADERS = 0x1, ... CONTINUATION = 0x9 }; // 6
-enum class ErrorCode : uint32_t { NO_ERROR = 0x0, PROTOCOL_ERROR = 0x1, ... };         // 7
-enum class Setting : uint16_t { HEADER_TABLE_SIZE = 0x1, ... };                        // 6.5.2
-struct FrameHeader { uint32_t length; FrameType type; uint8_t flags; uint32_t stream_id; }; // 4.1
+enum class FrameType : uint8_t { DATA = 0x0, HEADERS = 0x1, ... CONTINUATION = 0x9 };
+enum class ErrorCode : uint32_t { NO_ERROR = 0x0, PROTOCOL_ERROR = 0x1, ... };
+enum class Setting : uint16_t { HEADER_TABLE_SIZE = 0x1, ... };
+struct FrameHeader { uint32_t length; FrameType type; uint8_t flags; uint32_t stream_id; };
 FrameHeader parse_frame_header(std::span<const unsigned char, 9> octets);
 std::array<unsigned char, 9> serialize_frame_header(FrameHeader h);
 
-class Stream {                       // 5.1 states, 5.2 flow control window
+class Stream {
   State state; int64_t send_window; int64_t receive_window; ...
 };
 class Connection {
-  // 3.4 preface, 4.3 field section compression (ls-hpack only), 5 streams,
-  // 6 frames one method per frame type, 8 HTTP semantics: 8.2.1 field validity,
-  // 8.2.2 connection-specific fields, 8.2.3 Cookie, 8.3.1 request pseudo-headers
+
   ...
 };
 }
@@ -799,19 +788,19 @@ What moves out: WebSocket over h2 (RFC 8441) to 4.5, SSE over h2 to
 
 ```
 namespace websocket {
-std::array<char, 28> sec_websocket_accept(std::string_view sec_websocket_key); // 4.2.2
-enum class Opcode : uint8_t { continuation = 0x0, text = 0x1, binary = 0x2, close = 0x8, ping = 0x9, pong = 0xA }; // 5.2
-struct FrameHeader { bool fin; bool rsv1; Opcode opcode; bool masked; uint64_t payload_length; std::array<unsigned char,4> masking_key; }; // 5.2
+std::array<char, 28> sec_websocket_accept(std::string_view sec_websocket_key);
+enum class Opcode : uint8_t { continuation = 0x0, text = 0x1, binary = 0x2, close = 0x8, ping = 0x9, pong = 0xA };
+struct FrameHeader { bool fin; bool rsv1; Opcode opcode; bool masked; uint64_t payload_length; std::array<unsigned char,4> masking_key; };
 std::optional<FrameHeader> parse_frame_header(std::span<const unsigned char> octets);
 size_t serialize_frame_header(FrameHeader h, std::span<unsigned char, 14> out);
-std::string unmask(std::string_view payload, std::array<unsigned char,4> key, size_t offset); // 5.3
-enum class CloseCode : uint16_t { normal_closure = 1000, going_away = 1001, protocol_error = 1002, ... }; // 7.4.1
-struct Close { CloseCode code; std::string_view reason; };                       // 5.5.1
+std::string unmask(std::string_view payload, std::array<unsigned char,4> key, size_t offset);
+enum class CloseCode : uint16_t { normal_closure = 1000, going_away = 1001, protocol_error = 1002, ... };
+struct Close { CloseCode code; std::string_view reason; };
 class Connection { ... 5.4 fragmentation, 5.5 control frames, 6 send/receive, 7 close ... };
 }
 namespace websocket::permessage_deflate {
-struct Parameters { bool server_no_context_takeover; bool client_no_context_takeover; uint8_t server_max_window_bits; uint8_t client_max_window_bits; }; // 7.1
-std::optional<Parameters> negotiate(std::string_view sec_websocket_extensions);   // 5, 7.1
+struct Parameters { bool server_no_context_takeover; bool client_no_context_takeover; uint8_t server_max_window_bits; uint8_t client_max_window_bits; };
+std::optional<Parameters> negotiate(std::string_view sec_websocket_extensions);
 class Codec { ... 7.2 };
 }
 ```
@@ -824,11 +813,11 @@ becomes the reassembly state of `Connection`. `WsAdmit` and
 
 ```
 namespace cookies {
-std::vector<std::pair<std::string_view, std::string_view>> parse_cookie(std::string_view cookie_field); // 4.2
-std::string set_cookie_field_value(std::string_view name, std::string_view value, const Attributes &a); // 4.1
+std::vector<std::pair<std::string_view, std::string_view>> parse_cookie(std::string_view cookie_field);
+std::string set_cookie_field_value(std::string_view name, std::string_view value, const Attributes &a);
 }
 namespace problem_details {
-struct ProblemDetails { std::string type; uint16_t status; std::string title; std::string detail; std::string instance; }; // 3.1
+struct ProblemDetails { std::string type; uint16_t status; std::string title; std::string detail; std::string instance; };
 }
 ```
 
@@ -847,21 +836,21 @@ constexpr size_t sniff_octets = 512;
 
 ```
 namespace webmachine {
-enum class Node : uint8_t { B13, B12, ... P11 };            // the letters of the diagram, unchanged
+enum class Node : uint8_t { B13, B12, ... P11 };
 struct Edge { Node node; Kind kind; std::string_view callback; Target on_true; Target on_false; };
-inline constexpr Edge graph[] = { ... };                    // kFlow without the clause string: nothing reads it, so it is a comment; each clause becomes the name of that edge's case in test/wm_flow.rb
+inline constexpr Edge graph[] = { ... };
 
 struct Callback { mrb_sym name; mrb_method_t method; bool is_irep; NativeCallback native; bool on_class; uint8_t argc; };
 struct Resource {
-  std::array<Callback, node_count> node_callback;           // was six parallel arrays
-  std::array<Callback, value_count> value_callback;         // was sixteen ValueCb fields and a bit mask
-  std::array<uint16_t, method_count> plain_request_status;  // was KonstSet: the status of a request with no negotiation and no precondition, computed once
+  std::array<Callback, node_count> node_callback;
+  std::array<Callback, value_count> value_callback;
+  std::array<uint16_t, method_count> plain_request_status;
   ...
 };
-Resource compile_resource(mrb_state *mrb, mrb_value klass);  // was resource_fold
+Resource compile_resource(mrb_state *mrb, mrb_value klass);
 struct Decision { Node at; std::optional<Callback> ask; std::optional<uint16_t> status; };
-Decision next_decision(const Resource &r, const http::Request &q, const DecisionState &state); // pure: one node
-http::Response handle_request(const Resource &r, const http::Request &q); // the loop over next_decision, and the only place that calls Ruby
+Decision next_decision(const Resource &r, const http::Request &q, const DecisionState &state);
+http::Response handle_request(const Resource &r, const http::Request &q);
 }
 ```
 
