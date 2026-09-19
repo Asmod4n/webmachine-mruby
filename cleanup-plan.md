@@ -10,9 +10,9 @@ The plan has seven parts. Part 1 states the rules. Part 2 gives the
 numbers before the work. Part 3 states what the audit found, which
 procedures the RFCs give, and where their pieces lie today. Part 4
 states the target: the classes and the methods, in the order of the
-RFCs. Part 5 lists the open decisions. Part 6 states the steps, their
-order, and the loop that closes each step. Part 7 states what no step
-may do.
+RFCs. Part 5 records the decisions that were open and are now made.
+Part 6 states the steps, their order, and the loop that closes each
+step. Part 7 states what no step may do.
 
 ## 1. Rules
 
@@ -133,7 +133,6 @@ What the HTTP libraries used by the most people call things:
 | `quote_etag`, `unquote_etag`, `generate_etag` | Werkzeug | the entity tag forms |
 | `compile` | every regex library; Go `template.Must(template.New().Parse())`; Rust `Regex::new` | turn a description into a table once |
 | `suspend`, `resume` | C++ coroutines (`await_suspend`, `resume`); Kotlin; Python `asyncio` | stop a computation and go on later |
-| `borrow` | Rust | hold and read without owning, and give back |
 | `precompute`, `cache` | everywhere | compute once, read many times |
 
 The house words of this tree, and the word each becomes:
@@ -143,7 +142,7 @@ The house words of this tree, and the word each becomes:
 | `walk`, `run_engine`, `resource_run` | `handle_request` for the whole graph, `decide` for one node; the pure step is `next_decision` | Erlang webmachine and Go both use the word; `walk` names a metaphor |
 | `fold`, `resource_fold`, `ws_fold`, `sse_fold` | `compile_resource` | a class becomes a table once, which is what every regex library calls compile |
 | `park`, `parked`, `run_parkable` | `suspend`, `suspended`, `SuspendedRequest` | the language's own coroutine word |
-| `lend`, `lent`, `unlend`, `LentBody`, `kLendFloor`, `zc_*` | `borrow`, `BorrowedBody`, `borrow_threshold` | what happens: the body is sent from the Ruby string's own bytes through an `iovec`, and the string is held until the send drains. Rust's word for that is borrow. It is not zero copy: the tree has no `MSG_ZEROCOPY` and no `SEND_ZC` (`assets.sh`'s header records that `SEND_ZC` was tried and refused), so `zero_copy_threshold`, `kZeroCopyDefault`, `bintest/zerocopy.rb` and the `--zero-copy-threshold` flag name a kernel feature that is not used (open decision 7) |
+| `lend`, `lent`, `unlend`, `LentBody`, `kLendFloor`, `zc_*`, `zero_copy_threshold`, `kZeroCopyDefault` | `send_body_without_copy_above`, `BodySentWithoutCopy`, `kSendBodyWithoutCopyAboveBytes` | what happens and why: the body is sent from the Ruby string's own bytes through an `iovec`, held until the send drains, and the copy into the send buffer is the cost avoided. It is not zero copy: the tree has no `MSG_ZEROCOPY` and no `SEND_ZC` (`assets.sh`'s header records that `SEND_ZC` was tried and refused). Decision 7 |
 | `spell_*` (`spell_answer`, `spell_error`, `spell_fingerprint`, `spell_content_length`, `spell_steering`) | `format_*`, `serialize_*` | C++ `std::format`, Go `Write`, Werkzeug `dump` |
 | `say_*`, `open_vm_or_say` | `print_*`, `report_*` | plain words |
 | `bake`, `baked`, `has_baked` | `precomputed` | what it is |
@@ -287,7 +286,7 @@ gets the plain word.
 | `Rearm`, `H2Block`, `Slot` | the one field each holds |
 | `MemWriter`, `FileWriter` | the sink itself |
 | `H2BlockOut` | `std::span<unsigned char>` and a returned count |
-| `hpack_length_spell`, `hpack_name_index_spell`, and the static-table indices written as bare numbers (`0x88`, `8`, `18`, `26`, `30`, `31`, `34`, `44`, `59`) in `h2_build_block`, `h2_build_asset_blocks`, `h2_build_asset_shared` and the 206 and 416 arms | not a second copy to delete: the hand-built encoder is there for speed and stays (Part 4.4). It becomes one `rfc7541` namespace with the integer coding of 5.1, the literal forms of 6.2, and the static table of Appendix A as a named enum, so `0x88` reads `indexed(StaticTable::status_200)` |
+| `hpack_length_spell`, `hpack_name_index_spell`, and the static-table indices written as bare numbers (`0x88`, `8`, `18`, `26`, `30`, `31`, `34`, `44`, `59`) in `h2_build_block`, `h2_build_asset_blocks`, `h2_build_asset_shared` and the 206 and 416 arms | measured piece by piece against ls-hpack (decision 5): what ls-hpack does exactly as well is deleted; what stays becomes one `hpack` namespace with the static table of Appendix A as a named enum, so `0x88` reads `encode_indexed(StaticTable::status_200)` |
 | `u32_put`, `h2_u32`, `h2_u16` | `htonl`, `ntohl`, `ntohs`, `std::memcpy` |
 | `tok_eq`, `ci_eq`, `ascii_same`, `text_is_same_ignoring_case`, `sniff::media_type_is_same` | one `tok_eq`; the other four are copies |
 | three lowercase loops (`string_copy_lowercased`, `request.cpp:233`, `request.cpp:673`) | one function, or `std::ranges::transform` |
@@ -309,7 +308,7 @@ gets the plain word.
 | `kFaces`, `status_title`, `status_source` | `reason(status)` |
 | `access_log_method_name`, `kMethodName[]`, the switch in `request.cpp:77` | one method name table |
 | `chunk_tchar` and `is_tchar`; OWS tested five ways | one `tchar` and one `ows` predicate |
-| the private chunked-body decoder (`ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`) beside `phr_decode_chunked` | one decoder (open decision 3, Part 5) |
+| the private chunked-body decoder (`ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`) beside `phr_decode_chunked` | `phr_decode_chunked` alone (decision 3) |
 | `base64_encode_digest` | `simdutf::binary_to_base64` |
 | `utf8_prefix_may_still_be_valid` | simdutf's `TOO_SHORT` count |
 | `handler_call_with_no_args` and `handler_call_in_protected_call` | one trampoline with an argc |
@@ -382,7 +381,9 @@ On the Ruby side one field is reachable under several names:
 websocket and sse resources define no method from C; their callback
 names are found by search in the fold.
 
-Which of the invented names stay is open decision 1 (Part 5).
+Every name that is webmachine-ruby's stays (decision 1). What is
+reachable twice stays reachable twice; what changes is that each name
+is defined once, over one `http::Request`.
 
 ### 3.6 Where the facts in the comments go
 
@@ -391,7 +392,7 @@ kind has one destination.
 
 | kind | example | destination |
 |---|---|---|
-| an RFC clause | `// RFC 9110 13.1.3: a date in the future is ignored (l15)` | the namespace and the function name: `rfc9110::preconditions::if_modified_since_in_the_future_is_ignored`; and a test whose name cites the clause |
+| an RFC clause | `// RFC 9110 13.1.3: a date in the future is ignored (l15)` | the namespace and the function name: `http::preconditions::if_modified_since_in_the_future_is_ignored`; and a test whose name cites the clause |
 | a measured number | `kLendFloor = 4096`, the `sendmsg` cost, the 128 KiB zero-copy default | `bench/results/` already holds the row; `docs/explanation/` gets one page, `numbers-that-were-measured.md`, that lists each constant, its value, the row it came from and the script that moves it |
 | a kernel or library quirk | `EINTR` on `close(2)`, io-wq affinity, `MSG_RING` between rings, `mrb_noreturn` under `-std=c++20`, `MRB_FUNCALL_ARGC_MAX` | a name (`close_ignoring_eintr`), or a `static_assert` where it is a constant, or `docs/explanation/reactor.md` where it is a design fact |
 | a bug that was fixed | `// A guard that returns instead of raising hides our own bug` | a test in `test/` or `bintest/` that fails when the bug returns |
@@ -463,29 +464,29 @@ the skeleton. The right column is what the method collects.
 
 | RFC and section | the one method | the pieces today |
 |---|---|---|
-| 9110 13.2, evaluation of preconditions: the six ordered steps over If-Match, If-Unmodified-Since, If-None-Match, If-Modified-Since, If-Range | `rfc9110::evaluate_preconditions(fields, validators, method) -> optional<status>` | `header_switch` (`webmachine.hpp:1763`), `eval_request` cases G8 to L17, `kFlow` rows G8 to L17, `run_engine`'s G11/K13/H12/L17 arms (`resource.cpp:1486`), `etag_list_match`, `star_value`, `parse_http_date`, `if_range_matches` |
-| 9110 12.5.1, Accept: media ranges, q-values, specificity, ties | `rfc9110::choose_media_type(offered, accept) -> optional<index>` | `choose_media_type`, `accept_is_exact`, the second parser in `error_assets.cpp:392-474`, the third in `resource.cpp:472-1278`, `sniff::media_type_without_parameters` |
-| 9110 12.5.3, Accept-Encoding: identity, `*`, q=0 | `rfc9110::choose_content_coding(accept_encoding) -> Coding` | `gzip_acceptable`, `answer_step`'s `gzip_ok`, `compressible_media_type` |
-| 9110 14.2 and 14.1.2, Range and byte ranges: the satisfiable test, the last-byte-pos clamp, the 416 | `rfc9110::select_byte_range(range, if_range, etag, complete_length) -> RangeDecision` | `parse_range`, `read_size`, `if_range_matches`, `asset_step`, `RangeAsk`, the 206 and 416 arms in `http1.cpp:698` and `http2.cpp:1163` |
-| 9110 8.8.3.2, entity tag comparison, strong and weak | `rfc9110::entity_tag_matches(tag, list, comparison)` | `etag_list_match`, `EtagMatch`, `star_value` |
+| 9110 13.2, evaluation of preconditions: the six ordered steps over If-Match, If-Unmodified-Since, If-None-Match, If-Modified-Since, If-Range | `http::evaluate_preconditions(fields, validators, method) -> optional<status>` | `header_switch` (`webmachine.hpp:1763`), `eval_request` cases G8 to L17, `kFlow` rows G8 to L17, `run_engine`'s G11/K13/H12/L17 arms (`resource.cpp:1486`), `etag_list_match`, `star_value`, `parse_http_date`, `if_range_matches` |
+| 9110 12.5.1, Accept: media ranges, q-values, specificity, ties | `http::choose_media_type(offered, accept) -> optional<index>` | `choose_media_type`, `accept_is_exact`, the second parser in `error_assets.cpp:392-474`, the third in `resource.cpp:472-1278`, `sniff::media_type_without_parameters` |
+| 9110 12.5.3, Accept-Encoding: identity, `*`, q=0 | `http::choose_content_coding(accept_encoding) -> Coding` | `gzip_acceptable`, `answer_step`'s `gzip_ok`, `compressible_media_type` |
+| 9110 14.2 and 14.1.2, Range and byte ranges: the satisfiable test, the last-byte-pos clamp, the 416 | `http::select_byte_range(range, if_range, etag, complete_length) -> RangeDecision` | `parse_range`, `read_size`, `if_range_matches`, `asset_step`, `RangeAsk`, the 206 and 416 arms in `http1.cpp:698` and `http2.cpp:1163` |
+| 9110 8.8.3.2, entity tag comparison, strong and weak | `http::entity_tag_matches(tag, list, comparison)` | `etag_list_match`, `EtagMatch`, `star_value` |
 | 9110 5.6.7, HTTP-date: three formats in, IMF-fixdate out | `parse_http_date`, `format_imf_fixdate` | `parse_http_date`, `read_fixed_digits`, `read_month_name`, `epoch_from_civil`, `Civil`, `date_core`, `write_two_digits`, `mtime_spell_imf_date`, `patch_date`, `head_patch_date`, `Listing.stamp` |
-| 9110 10.2.2 and 3986 5.3, Location and reference resolution | `rfc9110::resolve_location(base, reference)` | `uri_join`, `UriRef`, `base_uri`, the `create_path` join in `run_node_n11` |
-| 9110 6.1 and 9112 6.3, message body length: the seven ordered rules | `rfc9112::message_body_length(request_fields) -> BodyLength` | `WireFacts`, `transfer_encoding_fold`, `connection_field_holds_token`, `head_framing_status`, `parse_content_length`, `body_take_status` |
-| 9112 7.1.3, decoding chunked | `rfc9112::decode_chunked(state, bytes) -> (state, decoded, consumed)` | `take_chunked`, `ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`, `chunk_tchar`, `chunk_hex`, `hex_digit`, `phr_decode_chunked` |
-| 9112 9.3, persistence: the version, the Connection field, the close | `rfc9112::connection_persists(version, request_fields, response_fields)` | `WireFacts::conn_close`, `persist`, `Variants` (three copies of every head for three Connection lines), `ConnectionOption` |
-| 9112 2.1 and 9110 6.1, serialize a response head | `rfc9112::serialize_head(status, fields) -> string` | `head_spell`, `SpelledHead`, `answer_assemble`, `assemble_dynamic`, `build_one_variant`, `build_open_prefix`, `file_spell`, `spell_error`, `run_append_field`, `header_append_key_value` |
-| 9113 4.1, frame header in and out | `rfc9113::parse_frame_header`, `serialize_frame_header` | `H2FrameHead`, `h2_u32`, `h2_u24`, `h2_u16`, `u32_put`, `control_frame_emit`, `H2Control` |
-| 9113 8.3.1 and 8.2.1, request pseudo-headers and field validity | `rfc9113::validate_request_fields(decoded) -> Request or ErrorCode` | the loop in `h2_dispatch` (`http2.cpp:640-1095`), `h2_field_ok`, `h2_path_ok`, `h2_word_is_path`, `h2_wire_header_ok`, `h2_trailer_name_ok`, `kH2NameOctet` |
-| 9113 5.2 and 6.9, flow control: two windows, WINDOW_UPDATE, the 2^31-1 bound | `rfc9113::apply_window_update(state, increment) -> state or ErrorCode`, `sendable(state, wanted) -> size` | `h2_credit_connection`, `h2_send_step`, `stream`, `h2_advance`, `flow_window`, the arms at `http2.cpp:1844-2022, 2770-2792` |
-| 9113 5.1, stream states | `rfc9113::Stream::transition(event) -> Stream or ErrorCode` | `H2State::open`, `close_stream`, `h2_is_idle`, `h2_reset_stream`, the state checks spread through `h2_feed` |
-| 7541 5.1, 6.1, 6.2 and Appendix A, HPACK encoding | `rfc7541::encode_integer(value, prefix_bits)`, `encode_indexed(StaticTable)`, `encode_literal_with_name_index(StaticTable, value)`, `encode_literal(name, value)`; decoding stays ls-hpack | `hpack_length_spell`, `hpack_name_index_spell`, the block builders, the bare indices, `h2_enc_field`, `H2BlockOut`, `H2State::enc_ins`, the head cache |
-| 6455 4.2.2, the server opening handshake: the eight checks and the response | `rfc6455::open_handshake(request) -> Response or status` | `ws_upgrade`, `ws_admit`, `WsAdmit`, `accept_key_compute`, `base64_encode_digest`, `ws_version`, `h2_extended_connect`, `H2Connect`, `rfc7692::negotiate` |
-| 6455 5.2 to 5.6, framing: header, masking, fragmentation, control frames | `rfc6455::parse_frame(state, bytes) -> (state, frames, consumed)`, `serialize_frame(frame)` | `read_head`, `header_need`, `header_build`, `unmask_copy`, `ws::Head`, `ws::Frame`, `ws::Mask`, `ws::Message`, `admit`, `frame_begin`, `data_frame_emit`, `message_deliver`, `utf8_prefix_may_still_be_valid` |
-| 6455 7, closing: code, reason, the handshake, the abnormal cases | `rfc6455::close(state, code, reason) -> (state, frame)` | `close_payload_build`, `close_read`, `ws::Close`, `close_code_of_symbol`, `ws_going_away`, `stream_report_close` |
-| 7692 7.1 and 7.2, permessage-deflate parameters and payload transform | `rfc7692::negotiate`, `Codec::compress`, `Codec::decompress` | `wsdeflate::negotiate`, `Negotiated`, `window_bits`, `Params`, `Codec` |
-| 6265 4.1 and 4.2, Set-Cookie out and Cookie in | `rfc6265::serialize_set_cookie(name, value, attributes)`, `parse_cookie(field)` | `response_set_cookie`, `CookieAttribute`, `CookieRules`, `cookie_rules_read`, `cookie_rules_check`, `cookie_same_site_name`, `request_get_cookies`, `cookie_repeats` |
-| 9457 3.1, the problem details object | `rfc9457::ProblemDetails` and its JSON | `ErrorResource.problem_document` in `mrblib/webmachine.rb` |
-| 9110 11.6.2, Authorization: scheme and credentials | `rfc9110::parse_authorization(field) -> (scheme, credentials)` | `request_get_authorization`, `spell_steering`'s scheme cut, `passwd.cpp`'s decode |
+| 9110 10.2.2 and 3986 5.3, Location and reference resolution | `http::resolve_location(base, reference)` | `uri_join`, `UriRef`, `base_uri`, the `create_path` join in `run_node_n11` |
+| 9110 6.1 and 9112 6.3, message body length: the seven ordered rules | `http1::message_body_length(request_fields) -> BodyLength` | `WireFacts`, `transfer_encoding_fold`, `connection_field_holds_token`, `head_framing_status`, `parse_content_length`, `body_take_status` |
+| 9112 7.1.3, decoding chunked | `phr_decode_chunked`, called from `http1::Connection` and nothing of ours (decision 3) | `take_chunked`, `ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`, `chunk_tchar`, `chunk_hex`, `hex_digit` |
+| 9112 9.3, persistence: the version, the Connection field, the close | `http1::connection_persists(version, request_fields, response_fields)` | `WireFacts::conn_close`, `persist`, `Variants` (three copies of every head for three Connection lines), `ConnectionOption` |
+| 9112 2.1 and 9110 6.1, serialize a response head | `http1::serialize_head(status, fields) -> string` | `head_spell`, `SpelledHead`, `answer_assemble`, `assemble_dynamic`, `build_one_variant`, `build_open_prefix`, `file_spell`, `spell_error`, `run_append_field`, `header_append_key_value` |
+| 9113 4.1, frame header in and out | `http2::parse_frame_header`, `serialize_frame_header` | `H2FrameHead`, `h2_u32`, `h2_u24`, `h2_u16`, `u32_put`, `control_frame_emit`, `H2Control` |
+| 9113 8.3.1 and 8.2.1, request pseudo-headers and field validity | `http2::validate_request_fields(decoded) -> Request or ErrorCode` | the loop in `h2_dispatch` (`http2.cpp:640-1095`), `h2_field_ok`, `h2_path_ok`, `h2_word_is_path`, `h2_wire_header_ok`, `h2_trailer_name_ok`, `kH2NameOctet` |
+| 9113 5.2 and 6.9, flow control: two windows, WINDOW_UPDATE, the 2^31-1 bound | `http2::apply_window_update(state, increment) -> state or ErrorCode`, `sendable(state, wanted) -> size` | `h2_credit_connection`, `h2_send_step`, `stream`, `h2_advance`, `flow_window`, the arms at `http2.cpp:1844-2022, 2770-2792` |
+| 9113 5.1, stream states | `http2::Stream::transition(event) -> Stream or ErrorCode` | `H2State::open`, `close_stream`, `h2_is_idle`, `h2_reset_stream`, the state checks spread through `h2_feed` |
+| 7541 5.1, 6.1, 6.2 and Appendix A, HPACK encoding | `hpack::encode_integer(value, prefix_bits)`, `encode_indexed(StaticTable)`, `encode_literal_with_name_index(StaticTable, value)`, `encode_literal(name, value)`, each kept only where ls-hpack is not as good (decision 5); decoding stays ls-hpack | `hpack_length_spell`, `hpack_name_index_spell`, the block builders, the bare indices, `h2_enc_field`, `H2BlockOut`, `H2State::enc_ins`, the head cache |
+| 6455 4.2.2, the server opening handshake: the eight checks and the response | `websocket::open_handshake(request) -> Response or status` | `ws_upgrade`, `ws_admit`, `WsAdmit`, `accept_key_compute`, `base64_encode_digest`, `ws_version`, `h2_extended_connect`, `H2Connect`, `websocket::permessage_deflate::negotiate` |
+| 6455 5.2 to 5.6, framing: header, masking, fragmentation, control frames | `websocket::parse_frame(state, bytes) -> (state, frames, consumed)`, `serialize_frame(frame)` | `read_head`, `header_need`, `header_build`, `unmask_copy`, `ws::Head`, `ws::Frame`, `ws::Mask`, `ws::Message`, `admit`, `frame_begin`, `data_frame_emit`, `message_deliver`, `utf8_prefix_may_still_be_valid` |
+| 6455 7, closing: code, reason, the handshake, the abnormal cases | `websocket::close(state, code, reason) -> (state, frame)` | `close_payload_build`, `close_read`, `ws::Close`, `close_code_of_symbol`, `ws_going_away`, `stream_report_close` |
+| 7692 7.1 and 7.2, permessage-deflate parameters and payload transform | `websocket::permessage_deflate::negotiate`, `Codec::compress`, `Codec::decompress` | `wsdeflate::negotiate`, `Negotiated`, `window_bits`, `Params`, `Codec` |
+| 6265 4.1 and 4.2, Set-Cookie out and Cookie in | `cookies::serialize_set_cookie(name, value, attributes)`, `parse_cookie(field)` | `response_set_cookie`, `CookieAttribute`, `CookieRules`, `cookie_rules_read`, `cookie_rules_check`, `cookie_same_site_name`, `request_get_cookies`, `cookie_repeats` |
+| 9457 3.1, the problem details object | `problem_details::ProblemDetails` and its JSON | `ErrorResource.problem_document` in `mrblib/webmachine.rb` |
+| 9110 11.6.2, Authorization: scheme and credentials | `http::parse_authorization(field) -> (scheme, credentials)` | `request_get_authorization`, `spell_steering`'s scheme cut, `passwd.cpp`'s decode |
 | 9110 15 and 10.2.1, the status line and Allow | `reason_phrase(status)`, `allow_field_value(methods)` | `reason`, `kFaces`, `status_title`, `status_source`, `run_append_allow`, `H2BlockFields::allow`, `kAllow` |
 
 Every row also names an interface of the functional shape. A
@@ -596,18 +597,24 @@ The edges of the change that are still open:
   sit unused in `ring_setup.hpp:149`, and `docs/how-to/tls.md`
   describes a setup the binary refuses.
 
-The plan does not start under a change that is half measured. Step 0
-closes the thread change or freezes it, and says which. The TLS edge
-is left as it is: it is a feature that waits on another gem, and the
-plan only names its dead code (Part 3.7) and its stale page.
+These are facts about the tree, recorded so that no cleanup step
+mistakes one of them for its own bug. Neither the thread change nor
+the TLS edge is this plan's work (decision 8). The plan names only the
+dead code of both (Part 3.7) and the pages that no longer say what the
+binary does.
 
 ## 4. The target, in the order of the RFCs
 
-Namespaces are named by the RFC. A file is named for what is in it.
-The RFC number in the namespace is the link a comment used to carry.
-Inside a namespace the order of the declarations is the order of the
-RFC's sections. A reader with the RFC open finds the code in the same
-place.
+Namespaces are named by content (decision 4): `http` for RFC 9110
+and 9111, `http1` for RFC 9112, `http2` for RFC 9113, `hpack` for RFC
+7541, `websocket` for RFC 6455, 7692 and 8441, `cookies` for RFC 6265,
+`problem_details` for RFC 9457, `sse` and `sniff` for the WHATWG
+standards, `webmachine` for the graph and the Resource. A file is
+named for what is in it. Inside a namespace the order of the
+declarations is the order of the RFC's sections, so a reader with the
+RFC open finds the code in the same place; the section number lives in
+the test names and the `static_assert` messages. The headings below
+keep the RFC number so this document can be read beside the RFC.
 
 Every function below takes const arguments and returns its result.
 Every name below is a proposal for the skeleton commit (step 2). The
@@ -616,7 +623,7 @@ skeleton is reviewed before code moves under it.
 ### 4.1 `rfc9110` (HTTP Semantics)
 
 ```
-namespace rfc9110 {
+namespace http {
 
 // 5 Fields
 struct FieldLine { std::string_view name; std::string_view value; };
@@ -709,8 +716,8 @@ that in step 5), `ReqFacts`, `ReqValues`, `ReqView`,
 ### 4.2 `rfc9111` (Caching)
 
 ```
-namespace rfc9111 {
-bool freshness_is_stated(const rfc9110::Fields &response_fields);     // 4.2.1, 5.2, 5.3
+namespace http {
+bool freshness_is_stated(const http::Fields &response_fields);     // 4.2.1, 5.2, 5.3
 constexpr std::string_view no_cache_directive = "no-cache";            // 5.2.2.4
 bool target_names_a_directory(std::string_view target);                // 4.2.2, heuristic freshness
 }
@@ -719,18 +726,18 @@ bool target_names_a_directory(std::string_view target);                // 4.2.2,
 ### 4.3 `rfc9112` (HTTP/1.1)
 
 ```
-namespace rfc9112 {
+namespace http1 {
 class Connection {
   // 2 Message, 3 Request line, 5 Field syntax
   ParseResult parse_head(std::string_view bytes) const;                // through picohttpparser
   // 6 Message body
-  BodyLength body_length(const rfc9110::Request &r) const;             // 6.3
+  BodyLength body_length(const http::Request &r) const;             // 6.3
   // 7.1 Chunked transfer coding
   ChunkedResult decode_chunked(std::string_view bytes) const;
   // 8 Incomplete messages
   // 9 Connection management
-  bool persists(const rfc9110::Request &r) const;                      // 9.3
-  std::string serialize(const rfc9110::Response &r, Persistence p) const; // 2.1 status line + fields
+  bool persists(const http::Request &r) const;                      // 9.3
+  std::string serialize(const http::Response &r, Persistence p) const; // 2.1 status line + fields
 };
 }
 ```
@@ -752,7 +759,7 @@ goes to its own class in Part 4.9.
 ### 4.4 `rfc9113` (HTTP/2) and `rfc7541` (HPACK)
 
 ```
-namespace rfc9113 {
+namespace http2 {
 enum class FrameType : uint8_t { DATA = 0x0, HEADERS = 0x1, ... CONTINUATION = 0x9 }; // 6
 enum class ErrorCode : uint32_t { NO_ERROR = 0x0, PROTOCOL_ERROR = 0x1, ... };         // 7
 enum class Setting : uint16_t { HEADER_TABLE_SIZE = 0x1, ... };                        // 6.5.2
@@ -772,18 +779,17 @@ class Connection {
 }
 ```
 
-HPACK encoding is written here on purpose, for speed, and it stays.
-What changes is its shape, not its owner. Today the encoder is two
-helpers and nine bare numbers spread over five builders. It becomes
-one `rfc7541` namespace in the order of the RFC: 5.1 integer
-representation, 6.1 indexed field, 6.2 literal field with and without
-a name index, and the static table of Appendix A as
-`enum class StaticTable : uint8_t { authority = 1, method_GET = 2, ...
-status_200 = 8, ... content_type = 31, ... }`. A reader sees
-`encode_indexed(StaticTable::status_200)` where `0x88` stood. The
-dynamic table on the sending side (`enc_ins`, the head cache) is
-measured in step 6 under rule 11 and kept if it pays. Decoding stays
-ls-hpack, because a decoder must handle every input and a decoder of
+HPACK encoding was written here for speed. Decision 5: it stays only
+where ls-hpack has nothing exactly as good. In step 6 each piece is
+measured against its ls-hpack form under rule 11: the static-table
+heads, the integer coding, the head cache. Equal or better means
+ls-hpack. What stays ours becomes one `hpack` namespace in the order
+of the RFC: 5.1 integer representation, 6.1 indexed field, 6.2 literal
+field with and without a name index, and the static table of Appendix
+A as `enum class StaticTable : uint8_t { authority = 1, method_GET =
+2, ... status_200 = 8, ... content_type = 31, ... }`, so a reader sees
+`encode_indexed(StaticTable::status_200)` where `0x88` stood. Decoding
+stays ls-hpack: a decoder must handle every input, and a decoder of
 our own is a second parser to fuzz.
 
 What moves out: WebSocket over h2 (RFC 8441) to 4.5, SSE over h2 to
@@ -792,7 +798,7 @@ What moves out: WebSocket over h2 (RFC 8441) to 4.5, SSE over h2 to
 ### 4.5 `rfc6455` (WebSocket), `rfc7692` (permessage-deflate), `rfc8441`
 
 ```
-namespace rfc6455 {
+namespace websocket {
 std::array<char, 28> sec_websocket_accept(std::string_view sec_websocket_key); // 4.2.2
 enum class Opcode : uint8_t { continuation = 0x0, text = 0x1, binary = 0x2, close = 0x8, ping = 0x9, pong = 0xA }; // 5.2
 struct FrameHeader { bool fin; bool rsv1; Opcode opcode; bool masked; uint64_t payload_length; std::array<unsigned char,4> masking_key; }; // 5.2
@@ -803,7 +809,7 @@ enum class CloseCode : uint16_t { normal_closure = 1000, going_away = 1001, prot
 struct Close { CloseCode code; std::string_view reason; };                       // 5.5.1
 class Connection { ... 5.4 fragmentation, 5.5 control frames, 6 send/receive, 7 close ... };
 }
-namespace rfc7692 {
+namespace websocket::permessage_deflate {
 struct Parameters { bool server_no_context_takeover; bool client_no_context_takeover; uint8_t server_max_window_bits; uint8_t client_max_window_bits; }; // 7.1
 std::optional<Parameters> negotiate(std::string_view sec_websocket_extensions);   // 5, 7.1
 class Codec { ... 7.2 };
@@ -817,11 +823,11 @@ becomes the reassembly state of `Connection`. `WsAdmit` and
 ### 4.6 `rfc6265` (Cookies) and `rfc9457` (Problem Details)
 
 ```
-namespace rfc6265 {
+namespace cookies {
 std::vector<std::pair<std::string_view, std::string_view>> parse_cookie(std::string_view cookie_field); // 4.2
 std::string set_cookie_field_value(std::string_view name, std::string_view value, const Attributes &a); // 4.1
 }
-namespace rfc9457 {
+namespace problem_details {
 struct ProblemDetails { std::string type; uint16_t status; std::string title; std::string detail; std::string instance; }; // 3.1
 }
 ```
@@ -829,7 +835,7 @@ struct ProblemDetails { std::string type; uint16_t status; std::string title; st
 ### 4.7 `whatwg` (Server-Sent Events, MIME sniffing)
 
 ```
-namespace whatwg {
+namespace sse {
 class EventStream { std::string event(std::string_view name, std::string_view data) const; std::string comment_line() const; ... };
 enum class SniffVerdict { agrees, contradicts, unknown };
 SniffVerdict sniff(std::string_view declared_media_type, std::string_view first_octets);
@@ -854,14 +860,14 @@ struct Resource {
 };
 Resource compile_resource(mrb_state *mrb, mrb_value klass);  // was resource_fold
 struct Decision { Node at; std::optional<Callback> ask; std::optional<uint16_t> status; };
-Decision next_decision(const Resource &r, const rfc9110::Request &q, const DecisionState &state); // pure: one node
-rfc9110::Response handle_request(const Resource &r, const rfc9110::Request &q); // the loop over next_decision, and the only place that calls Ruby
+Decision next_decision(const Resource &r, const http::Request &q, const DecisionState &state); // pure: one node
+http::Response handle_request(const Resource &r, const http::Request &q); // the loop over next_decision, and the only place that calls Ruby
 }
 ```
 
 `RunState` (60 fields) is split three ways: what the decision loop
 carries (`DecisionState`), what the response holds
-(`rfc9110::Response`), and what is suspended (`SuspendedRequest`: the
+(`http::Response`), and what is suspended (`SuspendedRequest`: the
 coroutine handle and its pending jobs). Nothing else of it survives.
 
 ### 4.9 Not in an RFC: the server
@@ -893,44 +899,58 @@ with one job. The list follows the boot order.
 | `PasswordFile` | LMDB and argon2id | `passwd.cpp` |
 | `Fingerprint` | FNV-1a over the error facts | `fnv1a*`, `spell_fingerprint` |
 
-## 5. Open decisions
+## 5. Decided
 
-Each decision changes what the skeleton looks like. The recommended
-answer is first.
+These were open. They were decided in the session of 2026-09-19.
 
-1. **Invented Ruby names.** `disp_path`, `path_info`, `path_tokens`,
-   `do_redirect`, `is_redirect?`, `base_uri`, `has_body?`,
-   `response.error`, `response.userdata`, `get?` ... `options?`.
-   Recommended: keep `path_tokens` and `base_uri` (webmachine-ruby
-   apps use them), drop the rest, and say so in
-   `docs/reference/request-and-response.md`. Alternative: keep all as
-   one-line Ruby methods in `mrblib/`, defined once, on top of the RFC
-   names.
-2. **The precomputed plain-request status.** Recommended: keep it as
-   a table `next_decision` fills at route time. The measured gain of
-   the constant tier lives there. Alternative: drop it and read the
-   loss in `bench/instructions.sh`.
-3. **Two chunked decoders.** Recommended: run the bintests that made
-   the strict decoder exist against `phr_decode_chunked` alone. If one
-   fails, ours stays and the call into picohttpparser goes. If none
-   fails, ours goes. One decoder either way.
-4. **Namespaces named by RFC.** Recommended: yes. It is the one place
-   a clause reference survives without a comment.
-5. **The h2 head cache.** Recommended: keep, measured under rule 11
-   when it moves under `rfc7541`. It sits on the hand-built encoder,
-   which stays.
-6. **`webmachine-ruby` callback names.** They stay. They are the
-   contract an app is written against, and the graph table cites them.
-7. **The name `zero_copy_threshold`.** The flag, the TOML key, the
-   `conf.*` setter, the constant and the bintest say zero copy, and
-   the tree does no zero copy: a body over the threshold is sent from
-   the Ruby string's own bytes and held until the send drains.
-   Recommended: rename to `borrow_threshold` everywhere, read the old
-   key and flag for one release with a warning that names the new
-   one, and change `docs/reference/configuration.md:149`,
-   `configuration.md:224` and `command-line.md:26` in the same pull
-   request. Alternative: keep the operator-visible name and rename
-   only the code.
+1. **The names of webmachine.** This tree is a port of webmachine, the
+   Erlang original and webmachine-ruby. Every name of webmachine-ruby's
+   `Request` and `Response` stays: `method`, `uri`, `headers`, `body`,
+   `routing_tokens`, `base_uri`, `disp_path`, `path_info`,
+   `path_tokens`, `[]`, `has_body?`, `query`, `cookies`, `https?`,
+   `get?`, `head?`, `post?`, `put?`, `delete?`, `trace?`, `connect?`,
+   `options?`; `headers`, `code`, `body`, `redirect`, `trace`, `error`,
+   `do_redirect`, `set_cookie`, `is_redirect?`, `redirect_to`. The RFC
+   field accessors this tree added stay beside them. Nothing an
+   application can see is removed. What the port lacks today
+   (`routing_tokens`, `[]`, `https?`, `trace?`, `connect?`,
+   `response.trace`) is a gap of the port, named here and not filled by
+   this plan. `response.userdata` is this tree's own and stays until
+   its owner says otherwise.
+2. **The precomputed plain-request status.** Stays, as a table
+   `next_decision` fills at route time. Measured before and after.
+3. **picohttpparser.** Everything picohttpparser offers is used, and
+   anything this tree wrote again that picohttpparser has is deleted.
+   `phr_decode_chunked` stays. The private chunked grammar
+   (`ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`, `chunk_tchar`,
+   `chunk_hex`) goes. The same rule holds for every linked library
+   (Part 3.3).
+4. **Namespaces by content, not by RFC number.** `http`, `http1`,
+   `http2`, `hpack`, `websocket`, `sse`, `cookies`, `problem_details`,
+   `webmachine`. The RFC section lives in test names and
+   `static_assert` messages. The order inside a namespace is the RFC's
+   section order.
+5. **HPACK.** The hand-built encoder stays only where ls-hpack has
+   nothing exactly as good. Each piece (the static-table heads, the
+   integer coding, the head cache) is measured under rule 11 against
+   the ls-hpack form. Equal or better means ls-hpack. Decoding is
+   ls-hpack already.
+6. **The callback names of webmachine.** They stay. Same reason as 1.
+7. **The threshold that was called `zero_copy_threshold`.** The name
+   says what happens and why. What happens: above N bytes the server
+   sends the body from the Ruby string's own memory instead of copying
+   it into the send buffer. Why: the copy is the cost it avoids, in cpu
+   per send and in memory per slow reader; the old comment measured 300
+   stalled readers of a 64 KB answer holding 19.5 MB of duplicates. The
+   name is `send_body_without_copy_above`: the flag
+   `--send-body-without-copy-above=N`, the TOML key and the `conf.*`
+   setter the same, the constant `kSendBodyWithoutCopyAboveBytes`, the
+   type `BodySentWithoutCopy`. The old flag and key are read for one
+   release with a warning that names the new one. Another word order is
+   one rename at the review of step 2.
+8. **The thread change on `reactor`.** Not touched. Nobody asked for it
+   to change. Step 0 takes the baseline on the tree as it is. Part 3.12
+   stays as a record of facts, not as work of this plan.
 
 ## 6. Steps
 
@@ -969,15 +989,9 @@ run in CI or on the author's machine, not here.
 
 ### Step 0: the baseline
 
-- The thread change of Part 3.12 is closed first, on `reactor`,
-  before any cleanup step: the ladder of `bench/threads.sh` is run to
-  its end, the numbers go to `bench/results/` with the commit hash,
-  and the six open edges are either finished or named in the pull
-  request that lands it. `docs/explanation/one-thread.md`,
-  `docs/reference/command-line.md:30` and `bench/floor.sh:518` say
-  what the binary does. If the change is not to land yet, it is
-  frozen behind its flag with `--threads=1` as the measured default,
-  and the baseline below is taken at that default.
+- Nothing in the tree changes. The thread change of Part 3.12 is not
+  this plan's (decision 8); the baseline is taken on the tree as it
+  is, at its own `--threads` default.
 - `rake test` green on the base commit.
 - `bench/instructions.sh` for the h1 floor, the h2 floor and one
   asset. The three counts go to `bench/results/` with the commit hash.
@@ -1018,8 +1032,7 @@ run in CI or on the author's machine, not here.
   sees what the one method will collect.
 - Nothing is called yet. The tree builds as before.
 - This step is the review point. The user reads the headers and says
-  what is missing and what is too much. Open decisions 1 to 6 are
-  settled here.
+  what is missing and what is too much.
 
 ### Step 3: one decision loop
 
@@ -1040,19 +1053,19 @@ run in CI or on the author's machine, not here.
 
 ### Step 4: one Request, one Response
 
-- `ReqFacts`, `ReqValues`, `ReqView` become `rfc9110::Request`, with
+- `ReqFacts`, `ReqValues`, `ReqView` become `http::Request`, with
   offsets into the head buffer. `Held`, `rebase`, `follow_copy` and
   `kReqValueSpans` go.
-- `RunState` splits into `WalkState`, `rfc9110::Response` and
+- `RunState` splits into `WalkState`, `http::Response` and
   `SuspendedWalk`.
-- The Ruby accessors keep their names in this step. Decision 1 is
-  applied in step 8.
+- The Ruby accessors keep their names, in this step and after
+  (decision 1).
 - `request_bind` and `response_bind` go. The Ruby `request` and
   `response` objects hold their request as a value, and each accessor
   reads `self`. `disp_override_` and `body_io_` go with them.
 - Check: suite, smoke, count.
 
-### Step 5: the pure functions under `rfc9110`, `rfc9111`, `rfc6265`, `rfc9457`
+### Step 5: the pure functions under `http`, `cookies`, `problem_details`
 
 - Each function of Part 4.1, 4.2 and 4.6 moves under its namespace,
   in RFC order, with const arguments and a return value. Its comments
@@ -1068,13 +1081,13 @@ run in CI or on the author's machine, not here.
 
 ### Step 6: the connections
 
-- `rfc9112::Connection` from the h1 parts of `http1*.cpp`.
-- `rfc9113::Connection` from `http2.cpp` and `h2_wire.*`.
-  `rfc7541` takes the hand-built encoder, measured before and after
-  under rule 11. Decision 5 is measured here.
-- `rfc6455::Connection` and `rfc7692::Codec` from `http1_wire.cpp`,
+- `http1::Connection` from the h1 parts of `http1*.cpp`.
+- `http2::Connection` from `http2.cpp` and `h2_wire.*`.
+  `hpack` takes the encoder: each piece measured against ls-hpack under
+  rule 11, and ls-hpack wins a tie (decision 5).
+- `websocket::Connection` and `websocket::permessage_deflate::Codec` from `http1_wire.cpp`,
   `websocket.cpp`, `wsconn.cpp` and the ws parts of `http2.cpp`.
-- `whatwg::EventStream` from `sse.cpp` and the sse parts of both.
+- `sse::EventStream` from `sse.cpp` and the sse parts of both.
 - `Http1` (the class) is gone at the end of this step.
 - Check: suite, `tools/conformance.sh` (h2spec, Autobahn), smoke,
   count.
@@ -1101,8 +1114,9 @@ run in CI or on the author's machine, not here.
 
 - The six parallel arrays and sixteen `ValueCb` fields become the two
   `Callback` arrays. `cb_mask` is derived, not stored.
-- Decision 1 is applied. `docs/reference/request-and-response.md` and
-  `docs/reference/resource.md` change in the same pull request.
+- Every webmachine-ruby name stays (decision 1). The duplicates are
+  defined once each, in `mrblib/`, over the RFC accessors.
+  `docs/reference/request-and-response.md` lists the gaps of the port.
 - The three route tables become one `Router`.
 - `request` is defined once.
 - Check: suite, `bintest/resource.rb`, `bintest/application.rb`,
