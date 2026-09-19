@@ -620,7 +620,7 @@ Every function below takes const arguments and returns its result.
 Every name below is a proposal for the skeleton commit (step 2). The
 skeleton is reviewed before code moves under it.
 
-### 4.1 `rfc9110` (HTTP Semantics)
+### 4.1 `http`: RFC 9110, HTTP Semantics
 
 ```
 namespace http {
@@ -713,7 +713,7 @@ speed for this length; `bench/instructions.sh` confirms or refutes
 that in step 5), `ReqFacts`, `ReqValues`, `ReqView`,
 `kReqValueSpans`, `rebase`, `follow_copy`, `Held`.
 
-### 4.2 `rfc9111` (Caching)
+### 4.2 `http`: RFC 9111, Caching
 
 ```
 namespace http {
@@ -723,7 +723,7 @@ bool target_names_a_directory(std::string_view target);                // 4.2.2,
 }
 ```
 
-### 4.3 `rfc9112` (HTTP/1.1)
+### 4.3 `http1`: RFC 9112, HTTP/1.1
 
 ```
 namespace http1 {
@@ -756,7 +756,7 @@ the asset answers, the coroutine suspend and resume, the compute and
 watcher bridges, the zero-copy plan, the error pages, sniffing. Each
 goes to its own class in Part 4.9.
 
-### 4.4 `rfc9113` (HTTP/2) and `rfc7541` (HPACK)
+### 4.4 `http2` and `hpack`: RFC 9113 and RFC 7541
 
 ```
 namespace http2 {
@@ -795,7 +795,7 @@ our own is a second parser to fuzz.
 What moves out: WebSocket over h2 (RFC 8441) to 4.5, SSE over h2 to
 4.7, the h1 paths in `spell_next_round` to 4.3.
 
-### 4.5 `rfc6455` (WebSocket), `rfc7692` (permessage-deflate), `rfc8441`
+### 4.5 `websocket`: RFC 6455, RFC 7692 and RFC 8441
 
 ```
 namespace websocket {
@@ -820,7 +820,7 @@ class Codec { ... 7.2 };
 becomes the reassembly state of `Connection`. `WsAdmit` and
 `Negotiated` go under rule 5.
 
-### 4.6 `rfc6265` (Cookies) and `rfc9457` (Problem Details)
+### 4.6 `cookies` and `problem_details`: RFC 6265 and RFC 9457
 
 ```
 namespace cookies {
