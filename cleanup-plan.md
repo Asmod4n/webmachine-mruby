@@ -314,7 +314,7 @@ gets the plain word.
 | `handler_call_with_no_args` and `handler_call_in_protected_call` | one trampoline with an argc |
 | `exception_text`'s join loop | `mrb_ary_join` |
 | `yield_array_entries` | `mrb_yield_argv` over `RARRAY_PTR` with the arena saved |
-| about 90 `std::string_view(RSTRING_PTR(v), RSTRING_LEN(v))` sites and every `mrb_str_new(mrb, p, n)` return | mruby-c-ext-helpers. CLAUDE.md says it is in the build. It is not: `mrbgem.rake` does not name it. It is added in step 1. |
+| about 90 `std::string_view(RSTRING_PTR(v), RSTRING_LEN(v))` sites and every `mrb_str_new(mrb, p, n)` return | mruby-c-ext-helpers. It is in the build, as CLAUDE.md says, through mruby-cbor, mruby-chrono, mruby-lmdb, mruby-toml and four more gems that depend on it. Nothing in `src/` includes it, and `mrbgem.rake` does not name it. Step 1 names it, because a gem this tree calls directly is a direct dependency. |
 | `Config.check_whole_number` and `Config.check_text` in Ruby | the same bounds checked again in `application.cpp` |
 | hand pointer arithmetic | `std::string_view`, `std::span`, `std::distance`, `std::next`. Every C++ file breaks CLAUDE.md here. |
 | `passwd.cpp:106` and `webmachine-passwd/main.cpp:160`, two copies of the argon2 context fill | mruby-argon2, a declared dependency nothing uses |
@@ -1004,7 +1004,8 @@ run in CI or on the author's machine, not here.
 - Delete the name form of `tools/rename-symbol.py`. The position form
   stays. `rename-batch.py` gets a check that its input is sorted
   bottom-up per file and refuses otherwise.
-- Add `mruby-c-ext-helpers` to `mrbgem.rake`.
+- Name `mruby-c-ext-helpers` in `mrbgem.rake`. It is already built
+  through other gems; naming it says that this tree calls it.
 - Fix `webmachine-logd`'s privacy levels to what the documentation
   says (Part 3.11), and add the bintest. The `server.cpp:622` warning
   moves to `full`. This is the one behaviour change in step 1, and it
@@ -1139,8 +1140,7 @@ run in CI or on the author's machine, not here.
 - The 25 pages under `docs/` are read once more against the new
   names. `docs/explanation/reactor.md` and
   `docs/explanation/numbers-that-were-measured.md` are added.
-  CLAUDE.md's claim about mruby-c-ext-helpers is made true (step 1)
-  and its `Held::Span` paragraph is kept as history.
+  CLAUDE.md's `Held::Span` paragraph is kept as history.
 - Check: the whole of Part 2, measured again, in the pull request
   text.
 
