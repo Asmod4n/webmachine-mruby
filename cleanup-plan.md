@@ -80,6 +80,77 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
     connection class, the reactor, HPACK, the send path, the body
     path, or anything a bench script names.
 
+### 1.1 Where a name comes from
+
+A name in this tree is a word a reader already knows from the HTTP
+code of a large ecosystem, or from the C++ standard library. This
+tree invents no verb. The rule has a written source for C++ and a
+practice in every large HTTP library.
+
+The written source is the C++ Core Guidelines, section NL, "Naming
+and layout". Its first rule is this plan's first rule: NL.1 "Don't
+say in comments what can be clearly stated in code." The ones that
+decide a name: NL.5 "Avoid encoding type information in names", NL.7
+"Make the length of a name roughly proportional to the length of its
+scope", NL.8 "Use a consistent naming style", NL.10 "Prefer
+underscore_style names", NL.19 "Avoid names that are easily misread".
+The Google C++ Style Guide adds the one line that matters most: "The
+most important rule: names should describe purpose or intent", and
+"Function names should generally be verb-like". The standard library
+is the third source, and its verbs are the ones below: `find`,
+`parse` (`std::chrono::parse`), `format`, `from_chars`, `to_chars`,
+`is_regular_file`, `contains`, `starts_with`.
+
+What the HTTP libraries used by the most people call things:
+
+| verb | who uses it | for what |
+|---|---|---|
+| `parse_*` | Go `ParseTime`, `ParseHTTPVersion`, `ParseCookie`; Werkzeug `parse_date`, `parse_accept_header`, `parse_range_header`, `parse_etags`, `parse_cookie`; Rust `http` `HeaderValue::from_str`; Beast `request_parser` | bytes in, a value out |
+| `format`, `dump_*`, `serialize`, `write` | Go `Header.Write`, `Request.Write`; Werkzeug `dump_header`, `dump_cookie`, `http_date`; Beast `serializer`; C++ `std::format` | a value in, bytes out |
+| `get`, `set`, `add`, `del`, `values`, `has` | Go `Header.Get/Set/Add/Del/Values`; Java `getHeader/setHeader`; Express `req.get`, `res.set`; Rust `HeaderMap::get/insert/append/remove/contains_key` | one field of a field list |
+| `is_*`, `has_*`, `*_matches` | Werkzeug `is_resource_modified`, `is_byte_range_valid`, `is_hop_by_hop_header`; Apache `ap_meets_conditions`; Rust `Method::is_safe`, `is_idempotent` | a yes or no |
+| `handle`, `serve` | Go `ServeHTTP`, `ServeContent`, `ServeFile`; Java `doGet`, `service`; Erlang webmachine `handle_request`; nginx `*_handler` | the one entry that takes a request and gives a response |
+| `decide`, `decision` | Erlang webmachine `webmachine_decision_core:decision/1`; Liberator `decide`; the webmachine diagram itself | one node of the graph |
+| `read`, `write`, `send`, `receive` | Go `ReadRequest`, `io.Reader`, `io.Writer`; Beast `http::read`, `http::write`; Proxygen `sendHeaders`, `sendBody`, `sendEOM`; Envoy `decodeHeaders`, `encodeHeaders` | bytes across a connection |
+| `encode`, `decode` | Envoy, ls-hpack `lshpack_enc_encode`, `lshpack_dec_decode`; Go `chunked` reader and writer | a wire coding |
+| `redirect`, `error`, `not_found` | Go `Redirect`, `Error`, `NotFound`; Java `sendRedirect`, `sendError`; Flask `redirect`, `abort` | the named response shapes |
+| `status_text`, `reason_phrase`, `canonical_reason` | Go `StatusText`; Rust `StatusCode::canonical_reason`; Rack `HTTP_STATUS_CODES` | the phrase of a status |
+| `detect_content_type`, `sniff` | Go `DetectContentType`; the WHATWG standard's own word is "sniff" | the WHATWG table |
+| `quote_etag`, `unquote_etag`, `generate_etag` | Werkzeug | the entity tag forms |
+| `compile` | every regex library; Go `template.Must(template.New().Parse())`; Rust `Regex::new` | turn a description into a table once |
+| `suspend`, `resume` | C++ coroutines (`await_suspend`, `resume`); Kotlin; Python `asyncio` | stop a computation and go on later |
+| `zero_copy`, `borrow` | Linux `MSG_ZEROCOPY`, io_uring `SEND_ZC`; Rust | send without a copy; hold without owning |
+| `precompute`, `cache` | everywhere | compute once, read many times |
+
+The house words of this tree, and the word each becomes:
+
+| today | becomes | why |
+|---|---|---|
+| `walk`, `run_engine`, `resource_run` | `handle_request` for the whole graph, `decide` for one node; the pure step is `next_decision` | Erlang webmachine and Go both use the word; `walk` names a metaphor |
+| `fold`, `resource_fold`, `ws_fold`, `sse_fold` | `compile_resource` | a class becomes a table once, which is what every regex library calls compile |
+| `park`, `parked`, `run_parkable` | `suspend`, `suspended`, `SuspendedRequest` | the language's own coroutine word |
+| `lend`, `lent`, `unlend`, `LentBody`, `kLendFloor` | `zero_copy_*`, `BorrowedBody`, `zero_copy_threshold` | the kernel's word for the send and Rust's word for the hold; the flag is already `zero_copy_threshold` |
+| `spell_*` (`spell_answer`, `spell_error`, `spell_fingerprint`, `spell_content_length`, `spell_steering`) | `format_*`, `serialize_*` | C++ `std::format`, Go `Write`, Werkzeug `dump` |
+| `say_*`, `open_vm_or_say` | `print_*`, `report_*` | plain words |
+| `bake`, `baked`, `has_baked` | `precomputed` | what it is |
+| `konst`, `KonstSet`, `KonstAnswers`, `KonstValue` | `constant_*`, `PrecomputedAnswers` | English |
+| `cats`, `Cat`, `disable_http_cats` | `error_page_images`, `disable_error_page_images` | a reader outside the joke |
+| `spill`, `BodySpill`, `spill_dir` | `body_file`, `BodyTemporaryFile`, `body_file_directory` | Go `os.CreateTemp`; "spill" is a database word for the same, and the plainer one wins |
+| `sink`, `Sink`, `out_answer` | a return value; where a stream is real, `Writer` | Go `io.Writer`; under rule 5 most sinks are the return type |
+| `carry`, `carry_` | `unparsed_bytes`, `leftover` | what it holds |
+| `Held`, `Released`, `Seen`, `HeldList`, `Ender` | `ScopeGuard`, or `std::unique_ptr` with a deleter | the C++ idiom's name |
+| `Took`, `Took::kOwed` | `HandleResult`, `awaiting_body` | a result, named as one |
+| `Round`, `RunRound`, `round_at`, `RoundOut`, `spell_next_round` | `Request`, `WorkerAnswers`, `ResponseWriter`, `write_next_response` | "round" meant four things |
+| `Bundle`, `Plan`, `Seg` | `PrecomputedRoute`, `SendPlan` stays (it is a plan of iovecs), `iovec` | what each holds |
+| `tier` (asset tier, konst tier, run tier) | drop the word; each is a function with the name of what it answers | `serve_asset`, `answer_from_precomputed`, `handle_request` |
+| `steering` | `request_line_summary` | what goes in the fingerprint |
+| `word` in `word_has_zero_octet` | gone with the SWAR (Part 4.1) or `uint64_t octets` | NL.19, misread as a text word |
+| `WM_UNREACHABLE` | `std::unreachable()` | C++23; until then the macro stays and is the one macro in the tree |
+
+The graph's own names stay: `B13`, `G7`, `service_available?`,
+`resource_exists?`, `content_types_provided`. They are the diagram's
+and webmachine-ruby's, and an application author reads them in both.
+
 ## 2. Numbers before the work
 
 | what | count |
@@ -92,7 +163,7 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
 | Ruby methods in `mrblib/` | 31 |
 | parameters named `out_value`, `out_answer`, `sink` or `out` in headers | 177 |
 | parameter names that do not match the type or the value | more than 200 (Part 3.1) |
-| code paths that walk the decision graph | 5 (Part 3.4) |
+| code paths that execute the decision graph | 5 (Part 3.4) |
 | request structs | 3: `ReqFacts`, `ReqValues`, `ReqView` |
 | log record structs | 5: `LogRec`, `ErrRec`, `AccessLine`, `ErrorLine`, `ErrFacts` |
 | route tables per application | 3: http, websocket, sse |
@@ -245,9 +316,10 @@ gets the plain word.
 | three copies of "open a VM and report a gem init raise" (`main.cpp:562`, `open_vm_or_say`, `server.cpp:446`) | one |
 | three copies of "get an sqe, submit when full, retry once" (`sqe_or_raise`, `watcher_free`, `compute_task.cpp:948`) | one |
 
-### 3.4 Five walkers of one graph
+### 3.4 Five executions of one graph
 
-The decision graph is one table, `kFlow`. Five pieces of code walk it:
+The decision graph is one table, `kFlow`. Five pieces of code execute
+it:
 
 1. `flow::walk` (`webmachine.hpp:489`), constants only, no Ruby.
 2. `flow::answer` (`webmachine.hpp:600`), the shortcut in front of 1.
@@ -260,10 +332,11 @@ The decision graph is one table, `kFlow`. Five pieces of code walk it:
    `shortcut_for`, `block_skips_are_the_graphs`, each with its own
    copy of the test `kind == kRequest || node == kC4`.
 
-One walker serves. The speed of the constant tier does not come from
-a second walker. It comes from a status that was computed once, at
-route time, for the plain request of each method. That table stays.
-The one walker computes it at route time.
+One `next_decision` and one `handle_request` serve. The speed of the
+constant path does not come from a second execution. It comes from a
+status that was computed once, at route time, for the plain request
+of each method. That table stays, filled by the same `next_decision`
+at route time.
 
 ### 3.5 One request under three names, and the Ruby surface
 
@@ -766,15 +839,16 @@ struct Resource {
   ...
 };
 Resource compile_resource(mrb_state *mrb, mrb_value klass);  // was resource_fold
-struct Walk { Node at; uint16_t status; ... };
-WalkResult walk(const Resource &r, const rfc9110::Request &q, WalkState state); // the one walker
+struct Decision { Node at; std::optional<Callback> ask; std::optional<uint16_t> status; };
+Decision next_decision(const Resource &r, const rfc9110::Request &q, const DecisionState &state); // pure: one node
+rfc9110::Response handle_request(const Resource &r, const rfc9110::Request &q); // the loop over next_decision, and the only place that calls Ruby
 }
 ```
 
-`RunState` (60 fields) is split three ways: what the walk carries
-(`WalkState`), what the response holds (`rfc9110::Response`), and
-what is suspended (`SuspendedWalk`: the coroutine handle and its
-pending jobs). Nothing else of it survives.
+`RunState` (60 fields) is split three ways: what the decision loop
+carries (`DecisionState`), what the response holds
+(`rfc9110::Response`), and what is suspended (`SuspendedRequest`: the
+coroutine handle and its pending jobs). Nothing else of it survives.
 
 ### 4.9 Not in an RFC: the server
 
@@ -910,6 +984,8 @@ run in CI or on the author's machine, not here.
   No bodies. No comments. Each declaration has a one-line
   `static_assert` or test name beside it where an RFC clause used to
   be a comment.
+- Every name in the skeleton is checked against Part 1.1: a verb from
+  the table, no house word, no metaphor.
 - Each row of Part 3.9 becomes one declaration whose arguments are
   the inputs the RFC names and whose state, where the RFC names one,
   is a value in and a value out. The row's right column is written
@@ -920,18 +996,19 @@ run in CI or on the author's machine, not here.
   what is missing and what is too much. Open decisions 1 to 6 are
   settled here.
 
-### Step 3: one walker
+### Step 3: one decision loop
 
-- `walk` in `webmachine.hpp` becomes the one walker with a
-  "may this node call Ruby" bit. `run_engine`'s special cases become
-  the callbacks of the nodes they special-case. `flow::answer`,
-  `walk_compiled`, `lands_on`, `reaches_a_node_that_reads_the_request`
-  and `block_skips_are_the_graphs` go. `shortcut_for` becomes the
-  table fill of decision 2.
-- The walker is pure: `walk(graph, resource, request, state) ->
-  (state, decision)`. The decision names the next callback to call or
-  the status to answer. The caller calls Ruby and calls `walk` again
-  with the answer. No Ruby call happens inside `walk`.
+- `flow::walk` in `webmachine.hpp` becomes `next_decision`, the one
+  pure step over the graph, and `handle_request` the one loop that
+  drives it. `run_engine`'s special cases become the callbacks of the
+  nodes they special-case. `flow::answer`, `walk_compiled`,
+  `lands_on`, `reaches_a_node_that_reads_the_request` and
+  `block_skips_are_the_graphs` go. `shortcut_for` becomes the table
+  fill of decision 2.
+- `next_decision(resource, request, state) -> Decision` is pure. The
+  decision names the next callback to call or the status to answer.
+  `handle_request` calls Ruby and calls `next_decision` again with the
+  answer. No Ruby call happens inside `next_decision`.
 - Check: `test/wm_flow.rb` (the flow oracle), the bintests, the
   instruction count. This step is the one most likely to move the
   count. It is measured alone for that reason.
