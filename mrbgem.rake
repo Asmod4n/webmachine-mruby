@@ -127,6 +127,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # crosses: an mrb_value belongs to one mrb_state.
   spec.add_dependency 'mruby-proc-irep-ext'
   spec.add_dependency 'mruby-cbor'
+  spec.add_dependency 'mruby-c-ext-helpers'
 
   # bintest/h2.rb, bintest/websocket.rb and four others build frames with
   # Array#pack. The server never calls that method, so the gem joins the
