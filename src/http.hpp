@@ -3,61 +3,64 @@
 
 #include <array>
 #include <cstddef>
-#include <exception>
-#include <format>
+#include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 
 namespace http
 {
 
-class ParseError : public std::exception
+struct Problem {
+    const char *section;
+    const char *rule;
+    const char *title;
+    const char *allowed;
+    unsigned status;
+};
+
+inline constexpr std::array kProblems = std::to_array<Problem>({
+    {"", "", "", "", 0},
+    {"RFC 9110 5.6.2", "tchar", "The field name is not valid",
+     "!#$%&'*+-.^_`|~ / DIGIT / ALPHA", 400},
+    {"RFC 9110 5.6.4", "quoted-string", "The field value is not valid",
+     "DQUOTE *( qdtext / quoted-pair ) DQUOTE", 400},
+    {"RFC 9110 5.6.4", "qdtext", "The field value is not valid",
+     "HTAB / SP / %x21 / %x23-5B / %x5D-7E / obs-text", 400},
+});
+
+inline constexpr uint16_t kUnknownProblem = 0;
+inline constexpr uint16_t kTcharProblem = 1;
+inline constexpr uint16_t kQuotedStringProblem = 2;
+inline constexpr uint16_t kQdtextProblem = 3;
+
+class ParseError : public std::runtime_error
 {
 public:
-    ParseError(const std::string_view section, const std::string_view rule,
-               const std::string_view allowed, const std::string_view text, const size_t offset)
-        : section_(section), rule_(rule), allowed_(allowed), offset_(offset),
+    ParseError(const uint16_t problem, const std::string_view text, const size_t offset)
+        : std::runtime_error(kProblems[problem].title), problem_(problem),
+          offset_(static_cast<uint32_t>(offset)),
           found_byte_(offset < text.size() ? static_cast<unsigned char>(text[offset]) : 0)
     {
-        static constexpr std::string_view digits = "0123456789abcdef";
         const size_t from = offset < 16 ? 0 : offset - 16;
-        for (const char letter : text.substr(from, 32)) {
-            const unsigned char byte = static_cast<unsigned char>(letter);
-            if (byte == '"' || byte == '\\') {
-                excerpt_[excerpt_length_++] = '\\';
-                excerpt_[excerpt_length_++] = static_cast<char>(byte);
-            } else if (byte >= 0x20 && byte <= 0x7E) {
-                excerpt_[excerpt_length_++] = static_cast<char>(byte);
-            } else {
-                excerpt_[excerpt_length_++] = '\\';
-                excerpt_[excerpt_length_++] = 'x';
-                excerpt_[excerpt_length_++] = digits[byte >> 4];
-                excerpt_[excerpt_length_++] = digits[byte & 0x0F];
-            }
-        }
-        const auto written = std::format_to_n(
-            message_.data(), message_.size() - 1,
-            "{} {}: byte {} is 0x{:02x}. The rule allows {}. Text: \"{}\"", section, rule, offset,
-            found_byte_, allowed, excerpt());
-        *written.out = '\0';
+        for (const char letter : text.substr(from, excerpt_.size()))
+            excerpt_[excerpt_length_++] = letter;
     }
 
-    const char *what() const noexcept override { return message_.data(); }
-    std::string_view section() const noexcept { return section_; }
-    std::string_view rule() const noexcept { return rule_; }
-    std::string_view allowed() const noexcept { return allowed_; }
+    std::string_view section() const noexcept { return kProblems[problem_].section; }
+    std::string_view rule() const noexcept { return kProblems[problem_].rule; }
+    std::string_view title() const noexcept { return kProblems[problem_].title; }
+    std::string_view allowed() const noexcept { return kProblems[problem_].allowed; }
+    unsigned status() const noexcept { return kProblems[problem_].status; }
     size_t offset() const noexcept { return offset_; }
     unsigned char found_byte() const noexcept { return found_byte_; }
     std::string_view excerpt() const noexcept { return {excerpt_.data(), excerpt_length_}; }
 
 private:
-    std::string_view section_;
-    std::string_view rule_;
-    std::string_view allowed_;
-    std::array<char, 384> message_{};
-    std::array<char, 128> excerpt_{};
-    size_t offset_;
-    size_t excerpt_length_ = 0;
+    uint16_t problem_;
+    uint32_t offset_;
+    std::array<char, 32> excerpt_{};
+    uint8_t excerpt_length_ = 0;
     unsigned char found_byte_;
 };
 
