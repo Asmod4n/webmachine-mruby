@@ -68,6 +68,17 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
     each run and nothing moved the wrong way. When one of them moves,
     the code is adjusted and they run again. The loop ends when a
     round changes nothing.
+11. **Every larger change is measured before and after.** Before the
+    change, the tree at its base commit is built and measured. After
+    the change, the same tree with the change is built the same way
+    and measured in the same session on the same machine, A B A B A B,
+    five runs each arm, medians compared, as `bench/how-to-measure.md`
+    says. Both numbers go into the pull request text with the row
+    from `bench/results/`. A change too small for the clock is
+    measured with `bench/instructions.sh`. A change with no before
+    number is not merged. "Larger" means: a walker, a parser, a
+    connection class, the reactor, HPACK, the send path, the body
+    path, or anything a bench script names.
 
 ## 2. Numbers before the work
 
@@ -90,6 +101,7 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
 | responsibilities in `http2.cpp` (2808 lines) | 16 |
 | file-scope and static mutable variables in `src/` | 41 (Part 3.8) |
 | texts that build the application at boot | 2 (Part 3.11) |
+| open edges of the thread change | 7 (Part 3.12) |
 
 Each number is measured again at the end of each step in Part 4.
 
@@ -190,7 +202,7 @@ gets the plain word.
 | `Rearm`, `H2Block`, `Slot` | the one field each holds |
 | `MemWriter`, `FileWriter` | the sink itself |
 | `H2BlockOut` | `std::span<unsigned char>` and a returned count |
-| `hpack_length_spell`, `hpack_name_index_spell`, `h2_build_block`, `h2_build_asset_blocks`, `h2_build_asset_shared`, the 206 and 416 arms, `H2State::enc_ins`, the head cache invalidation | ls-hpack, which is linked and already drives `h2_enc_field` |
+| `hpack_length_spell`, `hpack_name_index_spell`, and the static-table indices written as bare numbers (`0x88`, `8`, `18`, `26`, `30`, `31`, `34`, `44`, `59`) in `h2_build_block`, `h2_build_asset_blocks`, `h2_build_asset_shared` and the 206 and 416 arms | not a second copy to delete: the hand-built encoder is there for speed and stays (Part 4.4). It becomes one `rfc7541` namespace with the integer coding of 5.1, the literal forms of 6.2, and the static table of Appendix A as a named enum, so `0x88` reads `indexed(StaticTable::status_200)` |
 | `u32_put`, `h2_u32`, `h2_u16` | `htonl`, `ntohl`, `ntohs`, `std::memcpy` |
 | `tok_eq`, `ci_eq`, `ascii_same`, `text_is_same_ignoring_case`, `sniff::media_type_is_same` | one `tok_eq`; the other four are copies |
 | three lowercase loops (`string_copy_lowercased`, `request.cpp:233`, `request.cpp:673`) | one function, or `std::ranges::transform` |
@@ -379,7 +391,7 @@ the skeleton. The right column is what the method collects.
 | 9113 8.3.1 and 8.2.1, request pseudo-headers and field validity | `rfc9113::validate_request_fields(decoded) -> Request or ErrorCode` | the loop in `h2_dispatch` (`http2.cpp:640-1095`), `h2_field_ok`, `h2_path_ok`, `h2_word_is_path`, `h2_wire_header_ok`, `h2_trailer_name_ok`, `kH2NameOctet` |
 | 9113 5.2 and 6.9, flow control: two windows, WINDOW_UPDATE, the 2^31-1 bound | `rfc9113::apply_window_update(state, increment) -> state or ErrorCode`, `sendable(state, wanted) -> size` | `h2_credit_connection`, `h2_send_step`, `stream`, `h2_advance`, `flow_window`, the arms at `http2.cpp:1844-2022, 2770-2792` |
 | 9113 5.1, stream states | `rfc9113::Stream::transition(event) -> Stream or ErrorCode` | `H2State::open`, `close_stream`, `h2_is_idle`, `h2_reset_stream`, the state checks spread through `h2_feed` |
-| 7541, HPACK | ls-hpack, called from two places: decode a block, encode a field list | every hand-built block (Part 3.3) |
+| 7541 5.1, 6.1, 6.2 and Appendix A, HPACK encoding | `rfc7541::encode_integer(value, prefix_bits)`, `encode_indexed(StaticTable)`, `encode_literal_with_name_index(StaticTable, value)`, `encode_literal(name, value)`; decoding stays ls-hpack | `hpack_length_spell`, `hpack_name_index_spell`, the block builders, the bare indices, `h2_enc_field`, `H2BlockOut`, `H2State::enc_ins`, the head cache |
 | 6455 4.2.2, the server opening handshake: the eight checks and the response | `rfc6455::open_handshake(request) -> Response or status` | `ws_upgrade`, `ws_admit`, `WsAdmit`, `accept_key_compute`, `base64_encode_digest`, `ws_version`, `h2_extended_connect`, `H2Connect`, `rfc7692::negotiate` |
 | 6455 5.2 to 5.6, framing: header, masking, fragmentation, control frames | `rfc6455::parse_frame(state, bytes) -> (state, frames, consumed)`, `serialize_frame(frame)` | `read_head`, `header_need`, `header_build`, `unmask_copy`, `ws::Head`, `ws::Frame`, `ws::Mask`, `ws::Message`, `admit`, `frame_begin`, `data_frame_emit`, `message_deliver`, `utf8_prefix_may_still_be_valid` |
 | 6455 7, closing: code, reason, the handshake, the abnormal cases | `rfc6455::close(state, code, reason) -> (state, frame)` | `close_payload_build`, `close_read`, `ws::Close`, `close_code_of_symbol`, `ws_going_away`, `stream_report_close` |
@@ -455,6 +467,52 @@ Part 3.8 are cut along the real crossings:
 | answering threads (`--threads`) | one VM, one ring, one `Http1` each | `MSG_RING` in; a spin on `ring_fd` at boot |
 | compute workers | one VM, one ring each | `MSG_RING` both ways, a separate control ring for stop |
 | `webmachine-logd`, two processes | a socketpair | `LogRec` and `ErrRec`, a fixed header then the bytes |
+
+### 3.12 The change that is in flight
+
+This branch is cut from `reactor`, and `reactor` is in the middle of
+one change: answering from several threads. The acceptor takes every
+peer and hands it to a thread's ring with `MSG_RING`
+(`ring.hpp:1017-1094`); each thread has its own VM, its own `Http1`
+and its own ring (`server.cpp:353-520`); the boot ring became
+`BootQueue` (commit 52ff900); the connection table became
+`RLIMIT_NOFILE` (commits 5a8b1ec, 4f77226). The last two days of
+history are this change and its measurements, and the measurements
+are not finished: the rows in `bench/results/vm.log` for two threads
+read 448k, then 260k, then 172k responses per second across three
+commits of one afternoon, and two commit titles say the numbers were
+wrong.
+
+The edges of the change that are still open:
+
+- `RingConfig::rings_in_process` is written (`server.cpp:703`) and
+  read nowhere.
+- `boot_queue_down` has no caller.
+- The commit that introduced `place_of_next_peer` replaced a hash of
+  the peer's pid or address (murmur3, commit de25166) with a turn per
+  thread (commit 8767d0e). `docs/reference/command-line.md:30` still
+  says the thread is the one "its address or its pid names", and the
+  test that commit names, `test/wm_spread.rb`, is not in the tree.
+- `bench/floor.sh:518` writes "(one ring, one thread)" on every
+  harness row, with `threads=2` on the same row.
+- `docs/explanation/one-thread.md:9` says "one process and one
+  thread". CLAUDE.md names this exact sentence as the one a thread
+  flag makes false.
+- With `--threads=N` an application's `ready` hook runs N times and
+  `conf.url` is written N times (Part 3.11).
+- The answering threads start with a spin on `ring_fd`.
+- TLS is a second open edge, older than the threads. The record
+  layer left with mruby-ktls and mruby-tls has not landed.
+  `listener_tls_refuse` (`server.cpp:244`) stops a server whose
+  application asks for TLS. `AppSpec` still parses `cert_path`,
+  `key_path`, `named_pairs` and `tls`, the `kTls*` operation kinds
+  sit unused in `ring_setup.hpp:149`, and `docs/how-to/tls.md`
+  describes a setup the binary refuses.
+
+The plan does not start under a change that is half measured. Step 0
+closes the thread change or freezes it, and says which. The TLS edge
+is left as it is: it is a feature that waits on another gem, and the
+plan only names its dead code (Part 3.7) and its stale page.
 
 ## 4. The target, in the order of the RFCs
 
@@ -627,11 +685,19 @@ class Connection {
 }
 ```
 
-What is thrown: every hand-built HPACK block and the static-table
-indices (`0x88`, `8`, `18`, `26`, ...). ls-hpack encodes every field.
-`H2State::enc_ins` and the head cache go with them, unless step 6's
-instruction count says the cache paid for itself; then the cache is
-rebuilt on top of ls-hpack, not beside it.
+HPACK encoding is written here on purpose, for speed, and it stays.
+What changes is its shape, not its owner. Today the encoder is two
+helpers and nine bare numbers spread over five builders. It becomes
+one `rfc7541` namespace in the order of the RFC: 5.1 integer
+representation, 6.1 indexed field, 6.2 literal field with and without
+a name index, and the static table of Appendix A as
+`enum class StaticTable : uint8_t { authority = 1, method_GET = 2, ...
+status_200 = 8, ... content_type = 31, ... }`. A reader sees
+`encode_indexed(StaticTable::status_200)` where `0x88` stood. The
+dynamic table on the sending side (`enc_ins`, the head cache) is
+measured in step 6 under rule 11 and kept if it pays. Decoding stays
+ls-hpack, because a decoder must handle every input and a decoder of
+our own is a second parser to fuzz.
 
 What moves out: WebSocket over h2 (RFC 8441) to 4.5, SSE over h2 to
 4.7, the h1 paths in `spell_next_round` to 4.3.
@@ -762,8 +828,9 @@ answer is first.
    fails, ours goes. One decoder either way.
 4. **Namespaces named by RFC.** Recommended: yes. It is the one place
    a clause reference survives without a comment.
-5. **The h2 head cache.** Recommended: delete with the hand-built
-   HPACK, then measure. Rebuild on ls-hpack only if the count says so.
+5. **The h2 head cache.** Recommended: keep, measured under rule 11
+   when it moves under `rfc7541`. It sits on the hand-built encoder,
+   which stays.
 6. **`webmachine-ruby` callback names.** They stay. They are the
    contract an app is written against, and the graph table cites them.
 
@@ -803,7 +870,16 @@ run in CI or on the author's machine, not here.
 
 ### Step 0: the baseline
 
-- `rake test` green on `next`.
+- The thread change of Part 3.12 is closed first, on `reactor`,
+  before any cleanup step: the ladder of `bench/threads.sh` is run to
+  its end, the numbers go to `bench/results/` with the commit hash,
+  and the six open edges are either finished or named in the pull
+  request that lands it. `docs/explanation/one-thread.md`,
+  `docs/reference/command-line.md:30` and `bench/floor.sh:518` say
+  what the binary does. If the change is not to land yet, it is
+  frozen behind its flag with `--threads=1` as the measured default,
+  and the baseline below is taken at that default.
+- `rake test` green on the base commit.
 - `bench/instructions.sh` for the h1 floor, the h2 floor and one
   asset. The three counts go to `bench/results/` with the commit hash.
 - The numbers of Part 2 go into the pull request text of every later
@@ -891,8 +967,9 @@ run in CI or on the author's machine, not here.
 ### Step 6: the connections
 
 - `rfc9112::Connection` from the h1 parts of `http1*.cpp`.
-- `rfc9113::Connection` from `http2.cpp` and `h2_wire.*`, on
-  ls-hpack only. Decision 5 is measured here.
+- `rfc9113::Connection` from `http2.cpp` and `h2_wire.*`.
+  `rfc7541` takes the hand-built encoder, measured before and after
+  under rule 11. Decision 5 is measured here.
 - `rfc6455::Connection` and `rfc7692::Codec` from `http1_wire.cpp`,
   `websocket.cpp`, `wsconn.cpp` and the ws parts of `http2.cpp`.
 - `whatwg::EventStream` from `sse.cpp` and the sse parts of both.
