@@ -967,6 +967,31 @@ These questions were open. They were decided on 2026-09-19.
 8. **The thread change on `reactor`.** Not touched. Nobody asked for it
    to change. Step 0 takes the baseline on the tree as it is. Part 3.12
    stays as a record of facts, not as work of this plan.
+9. **One `Http` class, and the versions under it.** `Http` holds the
+   semantics of RFC 9110 and RFC 9111: request, response, fields,
+   representation, URI, and the rules that read them. `Http1`, `Http2`
+   and a later `Http3` hold only the conversion between those values
+   and bytes. They add no semantics. The decision graph reads a
+   `Request` and makes a `Response`, and it cannot see which version
+   carried them.
+
+   RFC 9114 makes this cheap to keep: HTTP/3 has the semantics of RFC
+   9110 and its own frames, with QPACK (RFC 9204) in place of HPACK.
+   Everything else that separates it from HTTP/2 is QUIC, which is
+   under HTTP and not in it. A later `Http3` is then one more file
+   beside `Http1` and `Http2`.
+
+   Three things reach the graph today that belong under it, and the
+   step that makes this cut moves them:
+
+   - the WebSocket upgrade, which is a 101 in HTTP/1.1 (RFC 6455 4.2.2)
+     and an extended CONNECT in HTTP/2 (RFC 8441 4);
+   - `Transfer-Encoding` and `Connection`, which RFC 9113 8.2.2 removes
+     from HTTP/2 and RFC 9114 4.2 from HTTP/3;
+   - `Expect: 100-continue`, whose answer is a wire event.
+
+   Each is answered by the version class before the graph runs. The
+   graph reads the result.
 
 ## 6. Steps
 
