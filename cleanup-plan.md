@@ -133,7 +133,7 @@ What the HTTP libraries used by the most people call things:
 | `quote_etag`, `unquote_etag`, `generate_etag` | Werkzeug | the entity tag forms |
 | `compile` | every regex library; Go `template.Must(template.New().Parse())`; Rust `Regex::new` | turn a description into a table once |
 | `suspend`, `resume` | C++ coroutines (`await_suspend`, `resume`); Kotlin; Python `asyncio` | stop a computation and go on later |
-| `zero_copy`, `borrow` | Linux `MSG_ZEROCOPY`, io_uring `SEND_ZC`; Rust | send without a copy; hold without owning |
+| `borrow` | Rust | hold and read without owning, and give back |
 | `precompute`, `cache` | everywhere | compute once, read many times |
 
 The house words of this tree, and the word each becomes:
@@ -143,7 +143,7 @@ The house words of this tree, and the word each becomes:
 | `walk`, `run_engine`, `resource_run` | `handle_request` for the whole graph, `decide` for one node; the pure step is `next_decision` | Erlang webmachine and Go both use the word; `walk` names a metaphor |
 | `fold`, `resource_fold`, `ws_fold`, `sse_fold` | `compile_resource` | a class becomes a table once, which is what every regex library calls compile |
 | `park`, `parked`, `run_parkable` | `suspend`, `suspended`, `SuspendedRequest` | the language's own coroutine word |
-| `lend`, `lent`, `unlend`, `LentBody`, `kLendFloor` | `zero_copy_*`, `BorrowedBody`, `zero_copy_threshold` | the kernel's word for the send and Rust's word for the hold; the flag is already `zero_copy_threshold` |
+| `lend`, `lent`, `unlend`, `LentBody`, `kLendFloor`, `zc_*` | `borrow`, `BorrowedBody`, `borrow_threshold` | what happens: the body is sent from the Ruby string's own bytes through an `iovec`, and the string is held until the send drains. Rust's word for that is borrow. It is not zero copy: the tree has no `MSG_ZEROCOPY` and no `SEND_ZC` (`assets.sh`'s header records that `SEND_ZC` was tried and refused), so `zero_copy_threshold`, `kZeroCopyDefault`, `bintest/zerocopy.rb` and the `--zero-copy-threshold` flag name a kernel feature that is not used (open decision 7) |
 | `spell_*` (`spell_answer`, `spell_error`, `spell_fingerprint`, `spell_content_length`, `spell_steering`) | `format_*`, `serialize_*` | C++ `std::format`, Go `Write`, Werkzeug `dump` |
 | `say_*`, `open_vm_or_say` | `print_*`, `report_*` | plain words |
 | `bake`, `baked`, `has_baked` | `precomputed` | what it is |
@@ -921,6 +921,16 @@ answer is first.
    which stays.
 6. **`webmachine-ruby` callback names.** They stay. They are the
    contract an app is written against, and the graph table cites them.
+7. **The name `zero_copy_threshold`.** The flag, the TOML key, the
+   `conf.*` setter, the constant and the bintest say zero copy, and
+   the tree does no zero copy: a body over the threshold is sent from
+   the Ruby string's own bytes and held until the send drains.
+   Recommended: rename to `borrow_threshold` everywhere, read the old
+   key and flag for one release with a warning that names the new
+   one, and change `docs/reference/configuration.md:149`,
+   `configuration.md:224` and `command-line.md:26` in the same pull
+   request. Alternative: keep the operator-visible name and rename
+   only the code.
 
 ## 6. Steps
 
