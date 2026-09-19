@@ -352,3 +352,21 @@ with the files and the line counts, and the diff on request.
 
 After the yes, the session writes, runs `tools/syntax-check.sh` and
 the tests, and reports only what is red. Green is one line.
+
+## Comments live in tests, and they say why
+
+`src/` carries no comments. Not a note, not a section number, not a
+name of a specification. What the code does, the code says. A reader
+who needs more than the declaration has found a name that is wrong,
+and the answer is the better name.
+
+A test carries one comment, and it answers one question: why this
+test exists. An RFC section, an issue, a pull request, a CVE. What
+the test does is in the test.
+
+    # RFC 9110 5.6.2: ':' and '(' are not tchar. RFC 2616 called them
+    # separators, and that word is gone.
+
+A string that reaches a log, an error page or a client is not a
+comment. `"RFC 9110 5.6.4"` inside a ParseError is what the operator
+reads at three in the morning. It stays.
