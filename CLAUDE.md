@@ -399,15 +399,9 @@ rules meet, the stricter one holds.
    pointer that is written through. The return type is what the
    function makes. A function that changes an object is a method of
    that object.
-5. **Use what a linked library has.** `std::`, mruby, liburing,
-   ls-hpack, zlib, miniz, picohttpparser, simdutf and ada are in the
-   build. Nothing they answer is written here a second time. Read the
-   library first, and read it in its own source: picohttpparser takes
-   the whitespace off a field value and this tree does not need to;
-   picohttpparser takes BWS after a chunk size, a bare LF and an
-   unchecked chunk extension, and every one of those three has a
-   vulnerability against its name, so the grammar check in front of
-   it stays.
+5. **Use what a linked library has.** Nothing a linked library answers
+   is written here a second time. Read the library first, and read it
+   in its own source rather than its documentation.
 6. **One Resource takes one Request and gives one Response.** There is
    one Request type and one Response type. Every field of either has
    the name the RFC gives it. `Http` holds the semantics of RFC 9110
